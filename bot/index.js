@@ -69,6 +69,49 @@ async function callGemini(payload) {
   }
 }
 
+// Find budget effective for a given month (YYYY-MM)
+function findEffectiveBudget(budgetRows, category, targetMonth) {
+  const candidates = budgetRows.filter(r =>
+    r.get('category') === category &&
+    r.get('effective_from') <= targetMonth
+  );
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => b.get('effective_from').localeCompare(a.get('effective_from')));
+  return parseFloat(candidates[0].get('monthly_limit') || 0);
+}
+
+// Get budget status for a category
+async function getBudgetStatus(doc, category, targetDate = new Date()) {
+  const budgetSheet = doc.sheetsByTitle['Budgets'];
+  if (!budgetSheet) return null;
+
+  const budgetRows = await budgetSheet.getRows();
+  const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
+
+  const limit = findEffectiveBudget(budgetRows, category, targetMonth);
+  if (!limit) return null;
+
+  const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
+  const expenseRows = await expenseSheet.getRows();
+
+  let spent = 0;
+  for (const row of expenseRows) {
+    const dateStr = row.get('receipt_date') || row.get('timestamp');
+    const date = new Date(dateStr);
+    if (date.getMonth() === targetDate.getMonth() &&
+        date.getFullYear() === targetDate.getFullYear() &&
+        row.get('category') === category) {
+      spent += parseFloat(row.get('total') || 0);
+    }
+  }
+
+  const pct = Math.round((spent / limit) * 100);
+  const icon = pct >= 90 ? '🔴' : pct >= 70 ? '⚠️' : '✅';
+  return `${icon} *${category}:* ₱${spent.toLocaleString()} / ₱${limit.toLocaleString()} (${pct}%)`;
+}
+
 // Webhook endpoint
 app.post('/telegram/webhook', async (req, res) => {
   if (req.headers['x-telegram-bot-api-secret-token'] !== WEBHOOK_SECRET) {
@@ -297,9 +340,12 @@ async function saveToSheets(chatId, pending) {
     });
 
     const total = Number(extracted.total || 0);
+    const budgetStatus = await getBudgetStatus(doc, extracted.category || 'Other');
+
     await bot.sendMessage(chatId,
       `✅ *Receipt saved!*\n\n` +
-      `${extracted.merchant || 'Unknown'} - ₱${total.toLocaleString()}`,
+      `${extracted.merchant || 'Unknown'} - ₱${total.toLocaleString()}` +
+      (budgetStatus ? `\n\n${budgetStatus}` : ''),
       { parse_mode: 'Markdown' }
     );
     console.log('🎉 Receipt saved to sheet!');
@@ -309,12 +355,180 @@ async function saveToSheets(chatId, pending) {
   }
 }
 
+// Handle /budget command
+async function handleBudgetCommand(chatId, text) {
+  const match = text.match(/^\/budget\s+(.+?)\s+(\d+(?:\.\d+)?)$/i);
+  if (!match) {
+    return bot.sendMessage(chatId, '⚠️ Usage: /budget <category> <amount>\nExample: /budget Groceries 8000');
+  }
+
+  const categoryInput = match[1];
+  const amount = parseFloat(match[2]);
+
+  const category = CATEGORIES.find(c => c.toLowerCase() === categoryInput.toLowerCase());
+  if (!category) {
+    return bot.sendMessage(chatId, `⚠️ Unknown category.\nValid: ${CATEGORIES.join(', ')}`);
+  }
+
+  const now = new Date();
+  const effectiveFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  try {
+    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
+    await doc.loadInfo();
+
+    const budgetSheet = doc.sheetsByTitle['Budgets'];
+    if (!budgetSheet) {
+      return bot.sendMessage(chatId, '⚠️ Please create a "Budgets" sheet tab first with columns: category, monthly_limit, effective_from');
+    }
+
+    const rows = await budgetSheet.getRows();
+    const existing = rows.find(r =>
+      r.get('category') === category &&
+      r.get('effective_from') === effectiveFrom
+    );
+
+    if (existing) {
+      existing.set('monthly_limit', amount);
+      await existing.save();
+    } else {
+      await budgetSheet.addRow({ category, monthly_limit: amount, effective_from: effectiveFrom });
+    }
+
+    await bot.sendMessage(chatId,
+      `✅ Budget set: *${category}* = ₱${amount.toLocaleString()}/month\n` +
+      `_Effective from ${effectiveFrom}_`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('handleBudgetCommand error:', err.message);
+    await bot.sendMessage(chatId, `❌ Error setting budget: ${err.message}`);
+  }
+}
+
+// Handle /summary command
+async function handleSummaryCommand(chatId) {
+  try {
+    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
+    await doc.loadInfo();
+
+    const budgetSheet = doc.sheetsByTitle['Budgets'];
+    const budgetRows = budgetSheet ? await budgetSheet.getRows() : [];
+
+    const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
+    const expenseRows = await expenseSheet.getRows();
+
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const targetMonth = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+
+    const spending = {};
+    for (const row of expenseRows) {
+      const dateStr = row.get('receipt_date') || row.get('timestamp');
+      const date = new Date(dateStr);
+      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
+        const cat = row.get('category') || 'Other';
+        const amount = parseFloat(row.get('total') || 0);
+        spending[cat] = (spending[cat] || 0) + amount;
+      }
+    }
+
+    const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    let lines = [`📊 *${monthName}*\n`];
+    let totalSpent = 0;
+
+    for (const cat of CATEGORIES) {
+      const spent = spending[cat] || 0;
+      const limit = findEffectiveBudget(budgetRows, cat, targetMonth);
+      totalSpent += spent;
+
+      if (limit) {
+        const pct = Math.round((spent / limit) * 100);
+        const icon = pct >= 90 ? '🔴' : pct >= 70 ? '⚠️' : '✅';
+        lines.push(`${icon} *${cat}:* ₱${spent.toLocaleString()} / ₱${limit.toLocaleString()} (${pct}%)`);
+      } else if (spent > 0) {
+        lines.push(`• *${cat}:* ₱${spent.toLocaleString()}`);
+      }
+    }
+
+    lines.push(`\n*Total:* ₱${totalSpent.toLocaleString()}`);
+
+    await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('handleSummaryCommand error:', err.message);
+    await bot.sendMessage(chatId, `❌ Error getting summary: ${err.message}`);
+  }
+}
+
+// Handle /add command
+async function handleAddCommand(chatId, text) {
+  const match = text.match(/^\/add\s+(\d+(?:\.\d+)?)\s+(\S+)(?:\s+(.+))?$/i);
+  if (!match) {
+    return bot.sendMessage(chatId, '⚠️ Usage: /add <amount> <category> [note]\nExample: /add 599 Subscriptions Netflix');
+  }
+
+  const amount = parseFloat(match[1]);
+  const categoryInput = match[2];
+  const note = match[3] || '';
+
+  const category = CATEGORIES.find(c => c.toLowerCase() === categoryInput.toLowerCase());
+  if (!category) {
+    return bot.sendMessage(chatId, `⚠️ Unknown category.\nValid: ${CATEGORIES.join(', ')}`);
+  }
+
+  try {
+    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
+    await doc.loadInfo();
+
+    const sheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
+    const today = new Date().toISOString().split('T')[0];
+
+    await sheet.addRow({
+      timestamp: new Date().toISOString(),
+      receipt_date: today,
+      merchant: note || 'Manual entry',
+      total: amount,
+      currency: DEFAULT_CURRENCY,
+      category: category,
+      payment_method: 'Other',
+      notes: note,
+      ocr_confidence: 1.0
+    });
+
+    const budgetStatus = await getBudgetStatus(doc, category);
+
+    await bot.sendMessage(chatId,
+      `✅ Added ₱${amount.toLocaleString()} to *${category}*` +
+      (note ? ` (${note})` : '') +
+      (budgetStatus ? `\n\n${budgetStatus}` : ''),
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('handleAddCommand error:', err.message);
+    await bot.sendMessage(chatId, `❌ Error adding expense: ${err.message}`);
+  }
+}
+
 // Basic query handler
 async function handleQuery(message) {
   const chatId = message.chat.id;
   const userId = message.from.id.toString();
 
   if (!ALLOWED_USER_IDS.includes(userId)) return;
+
+  const text = message.text.trim();
+
+  // Handle commands
+  if (text.startsWith('/budget ')) {
+    return handleBudgetCommand(chatId, text);
+  }
+  if (text === '/summary') {
+    return handleSummaryCommand(chatId);
+  }
+  if (text.startsWith('/add ')) {
+    return handleAddCommand(chatId, text);
+  }
 
   // Check if user is editing total
   if (userStates.get(chatId) === 'awaiting_edit') {
@@ -346,11 +560,12 @@ async function handleQuery(message) {
 
   await bot.sendMessage(chatId,
     `👋 *Expense Bot Ready!*\n\n` +
-    `📸 Send me a receipt photo and I will:\n` +
-    `• Extract merchant/total with OCR\n` +
-    `• Auto-categorize (Groceries/Fuel/etc)\n` +
-    `• Ask for confirmation before saving\n` +
-    `• Log to Google Sheets\n\n` +
+    `📸 *Receipt Scanning*\n` +
+    `Send a photo to extract & log expenses\n\n` +
+    `💰 *Budget Commands*\n` +
+    `/budget <category> <amount> - Set monthly budget\n` +
+    `/summary - View spending vs budgets\n` +
+    `/add <amount> <category> [note] - Quick entry\n\n` +
     `Ready when you are!`,
     { parse_mode: 'Markdown' }
   );
