@@ -1,0 +1,32 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  bot:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./bot:/app
+      - ./secrets:/secrets:ro
+    env_file:
+      - .env
+    command: sh -lc "npm i && node index.js"
+    depends_on:
+      - ocr
+    restart: unless-stopped
+
+  ocr:
+    build: ./ocr
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
