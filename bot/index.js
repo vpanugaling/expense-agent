@@ -8,8 +8,6 @@ const { google } = require('googleapis');
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
-const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID;
 const SHEET_ID = process.env.SHEET_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const OCR_BASE_URL = process.env.OCR_BASE_URL || 'http://ocr:8080';
@@ -27,6 +25,10 @@ const CATEGORIES = [
 
 const PAYMENT_METHODS = ['Cash', 'GCash', 'Card', 'Bank Transfer', 'Other'];
 
+// In-memory storage for pending confirmations
+const pendingEntries = new Map(); // chatId -> { extracted, ocrConf, ocrText, timestamp }
+const userStates = new Map();     // chatId -> "awaiting_edit" | null
+
 const app = express();
 app.use(express.raw({ type: 'application/json' }));
 
@@ -42,12 +44,8 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 const gCreds = require(GOOGLE_CREDENTIALS_PATH);
 const auth = new google.auth.GoogleAuth({
   credentials: gCreds,
-  scopes: [
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/spreadsheets'
-  ]
+  scopes: ['https://www.googleapis.com/auth/spreadsheets']
 });
-const drive = google.drive({ version: 'v3', auth });
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {
@@ -93,6 +91,12 @@ app.post('/telegram/webhook', async (req, res) => {
   }
 
   try {
+    // Handle callback queries (button clicks)
+    if (update.callback_query) {
+      await handleCallback(update.callback_query);
+      return res.send('OK');
+    }
+
     const userId = update.message?.from?.id?.toString();
     console.log('🔍 Checking user', userId, 'against ALLOWED_USER_IDS:', ALLOWED_USER_IDS);
 
@@ -134,11 +138,7 @@ async function handleReceipt(message) {
     const imageBuffer = Buffer.from(imgResp.data);
     console.log(`✅ Photo downloaded: ${imageBuffer.length} bytes`);
 
-    // 2) SKIP Drive upload (service account quota issue)
-    const driveFileUrl = 'https://drive.google.com/drive/folders/TEST - Drive upload disabled';
-    console.log('⏭️ Drive upload skipped (service account quota limitation)');
-
-    // 3) OCR (local service)
+    // 2) OCR (local service)
     console.log('🔍 Sending to OCR...');
     const form = new FormData();
     form.append('image', imageBuffer, { filename: 'receipt.jpg' });
@@ -151,23 +151,28 @@ async function handleReceipt(message) {
     const ocrConf = ocrResp.data.confidence || 0;
     console.log(`✅ OCR extracted (${ocrConf.toFixed(2)}): "${ocrText.substring(0, 100)}..."`);
 
-    // 4) Gemini: extract + categorize
+    // 3) Gemini: extract + categorize
     console.log('🤖 Asking Gemini to analyze...');
-    const geminiPrompt = `You are a strict JSON API. Given OCR text of a receipt, extract:
+    const geminiPrompt = `You are a receipt data extractor. Given OCR text, extract:
 
-- receipt_date: ISO date YYYY-MM-DD (guess if only date-like string)
-- merchant: short merchant name  
-- total: number (final total amount)
-- currency: always "${DEFAULT_CURRENCY}"
+- receipt_date: ISO date YYYY-MM-DD (best guess from any date-like text)
+- merchant: short merchant/store name
+- total: the FINAL total amount to pay (bottom of receipt, AFTER tax and discounts, NOT subtotal)
+- currency: "${DEFAULT_CURRENCY}"
 - category: one of [${CATEGORIES.join(', ')}]
-- payment_method: one of [${PAYMENT_METHODS.join(', ')}]
-- notes: short free-text notes if helpful
-- confidence: 0.0-1.0 of your extraction confidence
+- payment_method: one of [${PAYMENT_METHODS.join(', ')}] - look for keywords like "CASH", "GCASH", "CARD"
+- notes: any useful details (items purchased, reference number)
+- confidence: 0.0-1.0 based on how clear the OCR text is
+
+IMPORTANT:
+- If multiple amounts exist, pick the LARGEST one at the bottom (usually the total)
+- Common OCR errors: 0↔O, 1↔I↔l, 5↔S. Correct obvious mistakes.
+- If total is unreadable, set confidence < 0.3
 
 OCR text:
 ${ocrText}
 
-Return ONLY JSON with these keys. No markdown, no extra text.`;
+Return ONLY valid JSON with these keys. No markdown, no explanation.`;
 
     // ✅ Using retry wrapper instead of direct axios.post
     const gemResp = await callGemini({
@@ -193,13 +198,91 @@ Return ONLY JSON with these keys. No markdown, no extra text.`;
     const confidence = Number(extracted.confidence || 0);
     console.log('✅ Gemini extracted:', JSON.stringify(extracted, null, 2));
 
-    // 5) Append to Sheets
+    // 4) Store pending entry and ask for confirmation
+    pendingEntries.set(chatId, {
+      extracted,
+      ocrConf,
+      ocrText,
+      timestamp: Date.now()
+    });
+
+    await sendConfirmation(chatId, extracted, confidence);
+
+  } catch (err) {
+    console.error('handleReceipt error:', err.message);
+    console.error('Full error:', err);
+    await bot.sendMessage(chatId, `❌ Error processing receipt:\n\`${err.message}\`\n\nPlease try again or check logs.`);
+  }
+}
+
+// Send confirmation message with inline keyboard
+async function sendConfirmation(chatId, extracted, confidence) {
+  const total = Number(extracted.total || 0);
+  const summary =
+    `📸 *Receipt Extracted:*\n\n` +
+    `• *Merchant:* ${extracted.merchant || 'Unknown'}\n` +
+    `• *Total:* ₱${total.toLocaleString()}\n` +
+    `• *Category:* ${extracted.category || 'Other'}\n` +
+    `• *Payment:* ${extracted.payment_method || 'Cash'}\n` +
+    `• *Date:* ${extracted.receipt_date || 'Unknown'}\n` +
+    `• *AI confidence:* ${(confidence * 100).toFixed(0)}%`;
+
+  await bot.sendMessage(chatId, summary, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Confirm', callback_data: 'confirm' },
+          { text: '✏️ Edit Total', callback_data: 'edit' },
+          { text: '❌ Cancel', callback_data: 'cancel' }
+        ]
+      ]
+    }
+  });
+}
+
+// Handle callback queries (button clicks)
+async function handleCallback(callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const userId = callbackQuery.from.id.toString();
+  const action = callbackQuery.data;
+
+  // Acknowledge the callback
+  await bot.answerCallbackQuery(callbackQuery.id);
+
+  if (!ALLOWED_USER_IDS.includes(userId)) {
+    return bot.sendMessage(chatId, '❌ Not authorized.');
+  }
+
+  const pending = pendingEntries.get(chatId);
+  if (!pending) {
+    return bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
+  }
+
+  if (action === 'confirm') {
+    await saveToSheets(chatId, pending);
+    pendingEntries.delete(chatId);
+    userStates.delete(chatId);
+  } else if (action === 'edit') {
+    userStates.set(chatId, 'awaiting_edit');
+    await bot.sendMessage(chatId, '✏️ Type the correct total (e.g., 450.50):');
+  } else if (action === 'cancel') {
+    pendingEntries.delete(chatId);
+    userStates.delete(chatId);
+    await bot.sendMessage(chatId, '❌ Receipt cancelled. Send another photo when ready.');
+  }
+}
+
+// Save confirmed entry to Google Sheets
+async function saveToSheets(chatId, pending) {
+  try {
+    const { extracted, ocrConf } = pending;
+
     console.log('📊 Adding to Google Sheets...');
-    const doc = new GoogleSpreadsheet(SHEET_ID, auth); // ✅ pass auth directly (v4+ compatible)
+    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
     await doc.loadInfo();
 
-    // ✅ Safe fallback to first sheet index
-    const sheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex;
+    const sheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
 
     await sheet.addRow({
       timestamp: new Date().toISOString(),
@@ -210,20 +293,19 @@ Return ONLY JSON with these keys. No markdown, no extra text.`;
       category: extracted.category || 'Other',
       payment_method: extracted.payment_method || 'Other',
       notes: extracted.notes || '',
-      drive_file_url: driveFileUrl,
-      ocr_confidence: ocrConf,
-      needs_confirmation: confidence < 0.7
+      ocr_confidence: ocrConf
     });
 
-    const summary = `**Merchant**: ${extracted.merchant || 'Unknown'}\n**Total**: ₱${Number(extracted.total || 0).toLocaleString()}\n**Category**: ${extracted.category || 'Other'}\n**Payment**: ${extracted.payment_method || 'Cash'}\n**AI confidence**: ${(confidence * 100).toFixed(0)}%`;
-
-    await bot.sendMessage(chatId, `✅ **Receipt added to sheet!**\n\n${summary}\n\n📁 Drive: ${driveFileUrl}\n\nOCR text:\n\`${ocrText.substring(0, 300)}...\``);
-    console.log('🎉 Receipt fully processed!');
-
+    const total = Number(extracted.total || 0);
+    await bot.sendMessage(chatId,
+      `✅ *Receipt saved!*\n\n` +
+      `${extracted.merchant || 'Unknown'} - ₱${total.toLocaleString()}`,
+      { parse_mode: 'Markdown' }
+    );
+    console.log('🎉 Receipt saved to sheet!');
   } catch (err) {
-    console.error('handleReceipt error:', err.message);
-    console.error('Full error:', err);
-    await bot.sendMessage(chatId, `❌ Error processing receipt:\n\`${err.message}\`\n\nPlease try again or check logs.`);
+    console.error('saveToSheets error:', err.message);
+    await bot.sendMessage(chatId, `❌ Error saving to sheet: ${err.message}`);
   }
 }
 
@@ -234,15 +316,43 @@ async function handleQuery(message) {
 
   if (!ALLOWED_USER_IDS.includes(userId)) return;
 
+  // Check if user is editing total
+  if (userStates.get(chatId) === 'awaiting_edit') {
+    const newTotal = parseFloat(message.text.replace(/[^0-9.]/g, ''));
+
+    if (isNaN(newTotal)) {
+      await bot.sendMessage(chatId, '⚠️ Invalid number. Please type the total (e.g., 450.50):');
+      return;
+    }
+
+    const pending = pendingEntries.get(chatId);
+    if (!pending) {
+      userStates.delete(chatId);
+      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
+      return;
+    }
+
+    // Update the total
+    pending.extracted.total = newTotal;
+    userStates.delete(chatId);
+
+    // Show updated confirmation
+    const confidence = Number(pending.extracted.confidence || 0);
+    await sendConfirmation(chatId, pending.extracted, confidence);
+    return;
+  }
+
   console.log('✅ User authorized, handling query:', message.text);
 
   await bot.sendMessage(chatId,
-    `👋 **Expense Bot Ready!**\n\n` +
-    `📸 *Send me a receipt photo* and I will:\n` +
+    `👋 *Expense Bot Ready!*\n\n` +
+    `📸 Send me a receipt photo and I will:\n` +
     `• Extract merchant/total with OCR\n` +
     `• Auto-categorize (Groceries/Fuel/etc)\n` +
+    `• Ask for confirmation before saving\n` +
     `• Log to Google Sheets\n\n` +
-    `*Ready when you are!*`
+    `Ready when you are!`,
+    { parse_mode: 'Markdown' }
   );
 }
 
