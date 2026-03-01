@@ -25,6 +25,43 @@ const CATEGORIES = [
 
 const PAYMENT_METHODS = ['Cash', 'GCash', 'Card', 'Bank Transfer', 'Other'];
 
+// Category aliases for fuzzy matching
+const CATEGORY_ALIASES = {
+  'grocery': 'Groceries', 'supermarket': 'Groceries',
+  'food': 'Eating out', 'eating': 'Eating out', 'restaurant': 'Eating out', 'dine': 'Eating out', 'dining': 'Eating out',
+  'coffee': 'Coffee/snacks', 'snacks': 'Coffee/snacks', 'cafe': 'Coffee/snacks',
+  'transport': 'Transportation', 'grab': 'Transportation', 'taxi': 'Transportation', 'fare': 'Transportation',
+  'gas': 'Fuel', 'petrol': 'Fuel',
+  'utility': 'Utilities', 'electric': 'Utilities', 'water': 'Utilities', 'meralco': 'Utilities',
+  'rent': 'Rent/dues', 'dues': 'Rent/dues', 'hoa': 'Rent/dues',
+  'internet': 'Internet/mobile load', 'mobile': 'Internet/mobile load', 'load': 'Internet/mobile load', 'data': 'Internet/mobile load', 'wifi': 'Internet/mobile load',
+  'household': 'Household supplies', 'supplies': 'Household supplies', 'cleaning': 'Household supplies',
+  'personal': 'Personal care', 'salon': 'Personal care', 'haircut': 'Personal care',
+  'medical': 'Medical/Pharmacy', 'medicine': 'Medical/Pharmacy', 'pharmacy': 'Medical/Pharmacy', 'meds': 'Medical/Pharmacy', 'doctor': 'Medical/Pharmacy', 'hospital': 'Medical/Pharmacy',
+  'kids': 'Kids/Family', 'family': 'Kids/Family', 'children': 'Kids/Family',
+  'shopping': 'Shopping', 'shop': 'Shopping', 'clothes': 'Shopping', 'lazada': 'Shopping', 'shopee': 'Shopping',
+  'subscription': 'Subscriptions', 'netflix': 'Subscriptions', 'spotify': 'Subscriptions',
+  'gift': 'Gifts/Donations', 'gifts': 'Gifts/Donations', 'donation': 'Gifts/Donations',
+  'travel': 'Travel', 'vacation': 'Travel', 'hotel': 'Travel', 'flight': 'Travel',
+  'fees': 'Fees/Bank charges', 'bank': 'Fees/Bank charges', 'atm': 'Fees/Bank charges',
+  'other': 'Other', 'misc': 'Other'
+};
+
+// Find category by exact match, alias, or partial match
+function findCategory(input) {
+  const normalized = input.toLowerCase().trim();
+  // 1. Exact match
+  const exact = CATEGORIES.find(c => c.toLowerCase() === normalized);
+  if (exact) return exact;
+  // 2. Alias match
+  const aliasMatch = CATEGORY_ALIASES[normalized];
+  if (aliasMatch) return aliasMatch;
+  // 3. Partial match
+  const partial = CATEGORIES.find(c => c.toLowerCase().includes(normalized));
+  if (partial) return partial;
+  return null;
+}
+
 // In-memory storage for pending confirmations
 const pendingEntries = new Map(); // chatId -> { extracted, ocrConf, ocrText, timestamp }
 const userStates = new Map();     // chatId -> "awaiting_edit" | null
@@ -365,9 +402,9 @@ async function handleBudgetCommand(chatId, text) {
   const categoryInput = match[1];
   const amount = parseFloat(match[2]);
 
-  const category = CATEGORIES.find(c => c.toLowerCase() === categoryInput.toLowerCase());
+  const category = findCategory(categoryInput);
   if (!category) {
-    return bot.sendMessage(chatId, `⚠️ Unknown category.\nValid: ${CATEGORIES.join(', ')}`);
+    return bot.sendMessage(chatId, `⚠️ Unknown category "${categoryInput}".\nValid: ${CATEGORIES.join(', ')}`);
   }
 
   const now = new Date();
@@ -472,9 +509,9 @@ async function handleAddCommand(chatId, text) {
   const categoryInput = match[2];
   const note = match[3] || '';
 
-  const category = CATEGORIES.find(c => c.toLowerCase() === categoryInput.toLowerCase());
+  const category = findCategory(categoryInput);
   if (!category) {
-    return bot.sendMessage(chatId, `⚠️ Unknown category.\nValid: ${CATEGORIES.join(', ')}`);
+    return bot.sendMessage(chatId, `⚠️ Unknown category "${categoryInput}".\nValid: ${CATEGORIES.join(', ')}`);
   }
 
   try {
