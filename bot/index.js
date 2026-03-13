@@ -131,7 +131,6 @@ async function getBudgetStatus(doc, category, targetDate = new Date()) {
   const budgetSheet = doc.sheetsByTitle['Budgets'];
   if (!budgetSheet) return null;
 
-  budgetSheet.resetLocalCache(true);
   const budgetRows = await budgetSheet.getRows();
   const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
 
@@ -139,7 +138,6 @@ async function getBudgetStatus(doc, category, targetDate = new Date()) {
   if (!limit) return null;
 
   const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
-  expenseSheet.resetLocalCache(true);
   const expenseRows = await expenseSheet.getRows();
 
   let spent = 0;
@@ -466,11 +464,9 @@ async function handleSummaryCommand(chatId) {
     await doc.loadInfo();
 
     const budgetSheet = doc.sheetsByTitle['Budgets'];
-    if (budgetSheet) budgetSheet.resetLocalCache(true);
     const budgetRows = budgetSheet ? await budgetSheet.getRows() : [];
 
     const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
-    expenseSheet.resetLocalCache(true);
     const expenseRows = await expenseSheet.getRows();
 
     const now = new Date();
