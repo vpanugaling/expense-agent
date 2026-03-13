@@ -469,6 +469,15 @@ async function handleSummaryCommand(chatId) {
     const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
     const expenseRows = await expenseSheet.getRows();
 
+    // DEBUG: Log raw data from API
+    console.log('📊 DEBUG: Total rows fetched:', expenseRows.length);
+    console.log('📊 DEBUG: Last 5 expense rows:', expenseRows.slice(-5).map(r => ({
+      date: r.get('receipt_date'),
+      category: r.get('category'),
+      total: r.get('total'),
+      merchant: r.get('merchant')
+    })));
+
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
