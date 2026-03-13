@@ -321,7 +321,10 @@ async function sendConfirmation(chatId, extracted, confidence) {
         [
           { text: '✅ Confirm', callback_data: 'confirm' },
           { text: '✏️ Edit Total', callback_data: 'edit_total' },
+        ],
+        [
           { text: '📁 Edit Category', callback_data: 'edit_category' },
+          { text: '📅 Edit Date', callback_data: 'edit_date' },
         ],
         [
           { text: '❌ Cancel', callback_data: 'cancel' }
@@ -360,6 +363,9 @@ async function handleCallback(callbackQuery) {
     userStates.set(chatId, { type: 'edit_category' });
     const categoryList = CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
     await bot.sendMessage(chatId, `📁 Reply with category name or number:\n\n${categoryList}`);
+  } else if (action === 'edit_date') {
+    userStates.set(chatId, { type: 'edit_date' });
+    await bot.sendMessage(chatId, '📅 Type the correct date (YYYY-MM-DD or "today", "yesterday"):');
   } else if (action === 'cancel') {
     pendingEntries.delete(chatId);
     userStates.delete(chatId);
@@ -468,15 +474,6 @@ async function handleSummaryCommand(chatId) {
 
     const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
     const expenseRows = await expenseSheet.getRows();
-
-    // DEBUG: Log raw data from API
-    console.log('📊 DEBUG: Total rows fetched:', expenseRows.length);
-    console.log('📊 DEBUG: Last 5 expense rows:', expenseRows.slice(-5).map(r => ({
-      date: r.get('receipt_date'),
-      category: r.get('category'),
-      total: r.get('total'),
-      merchant: r.get('merchant')
-    })));
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -639,6 +636,52 @@ async function handleQuery(message) {
 
     // Update the category
     pending.extracted.category = category;
+    userStates.delete(chatId);
+
+    // Show updated confirmation
+    const confidence = Number(pending.extracted.confidence || 0);
+    await sendConfirmation(chatId, pending.extracted, confidence);
+    return;
+  } else if (state?.type === 'edit_date') {
+    const pending = pendingEntries.get(chatId);
+    if (!pending) {
+      userStates.delete(chatId);
+      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
+      return;
+    }
+
+    const dateStr = message.text.trim().toLowerCase();
+    let parsedDate = null;
+
+    // Handle natural language dates
+    const today = new Date();
+    if (dateStr === 'today') {
+      parsedDate = today.toISOString().split('T')[0];
+    } else if (dateStr === 'yesterday') {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      parsedDate = yesterday.toISOString().split('T')[0];
+    } else {
+      // Try to parse YYYY-MM-DD format
+      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (match) {
+        parsedDate = dateStr;
+      } else {
+        // Try natural date parsing (e.g., "march 13", "mar 13 2026")
+        const naturalDate = new Date(dateStr);
+        if (!isNaN(naturalDate.getTime())) {
+          parsedDate = naturalDate.toISOString().split('T')[0];
+        }
+      }
+    }
+
+    if (!parsedDate) {
+      await bot.sendMessage(chatId, '⚠️ Invalid date format. Try YYYY-MM-DD, "today", or "yesterday".');
+      return;
+    }
+
+    // Update the date
+    pending.extracted.receipt_date = parsedDate;
     userStates.delete(chatId);
 
     // Show updated confirmation
