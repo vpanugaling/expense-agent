@@ -1,5 +1,6 @@
 .env
 secrets/
+node_modules/
 *.pyc
 __pycache__/
 *.pyo

@@ -11,7 +11,7 @@ const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const SHEET_ID = process.env.SHEET_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const OCR_BASE_URL = process.env.OCR_BASE_URL || 'http://ocr:8080';
-const ALLOWED_USER_IDS = process.env.ALLOWED_USER_IDS.split(',');
+const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS || '').split(',').filter(Boolean);
 const DEFAULT_CURRENCY = process.env.DEFAULT_CURRENCY || 'PHP';
 const GOOGLE_CREDENTIALS_PATH = '/secrets/google-sa.json';
 
@@ -50,6 +50,7 @@ const CATEGORY_ALIASES = {
 // Find category by exact match, alias, or partial match
 function findCategory(input) {
   const normalized = input.toLowerCase().trim();
+  if (!normalized) return null;
   // 1. Exact match
   const exact = CATEGORIES.find(c => c.toLowerCase() === normalized);
   if (exact) return exact;
@@ -74,15 +75,21 @@ app.use((req, res, next) => {
   next();
 });
 
+// Skip service initialization during tests
+const isTest = process.env.NODE_ENV === 'test';
+
 // Telegram bot (no polling, webhook only)
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
+const bot = isTest ? null : new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
 // Google auth client
-const gCreds = require(GOOGLE_CREDENTIALS_PATH);
-const auth = new google.auth.GoogleAuth({
-  credentials: gCreds,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets']
-});
+let auth = null;
+if (!isTest) {
+  const gCreds = require(GOOGLE_CREDENTIALS_PATH);
+  auth = new google.auth.GoogleAuth({
+    credentials: gCreds,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  });
+}
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {
@@ -124,6 +131,7 @@ async function getBudgetStatus(doc, category, targetDate = new Date()) {
   const budgetSheet = doc.sheetsByTitle['Budgets'];
   if (!budgetSheet) return null;
 
+  budgetSheet.resetLocalCache();
   const budgetRows = await budgetSheet.getRows();
   const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
 
@@ -131,6 +139,7 @@ async function getBudgetStatus(doc, category, targetDate = new Date()) {
   if (!limit) return null;
 
   const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
+  expenseSheet.resetLocalCache();
   const expenseRows = await expenseSheet.getRows();
 
   let spent = 0;
@@ -313,7 +322,10 @@ async function sendConfirmation(chatId, extracted, confidence) {
       inline_keyboard: [
         [
           { text: '✅ Confirm', callback_data: 'confirm' },
-          { text: '✏️ Edit Total', callback_data: 'edit' },
+          { text: '✏️ Edit Total', callback_data: 'edit_total' },
+          { text: '📁 Edit Category', callback_data: 'edit_category' },
+        ],
+        [
           { text: '❌ Cancel', callback_data: 'cancel' }
         ]
       ]
@@ -343,9 +355,13 @@ async function handleCallback(callbackQuery) {
     await saveToSheets(chatId, pending);
     pendingEntries.delete(chatId);
     userStates.delete(chatId);
-  } else if (action === 'edit') {
-    userStates.set(chatId, 'awaiting_edit');
+  } else if (action === 'edit_total') {
+    userStates.set(chatId, { type: 'edit_total' });
     await bot.sendMessage(chatId, '✏️ Type the correct total (e.g., 450.50):');
+  } else if (action === 'edit_category') {
+    userStates.set(chatId, { type: 'edit_category' });
+    const categoryList = CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
+    await bot.sendMessage(chatId, `📁 Reply with category name or number:\n\n${categoryList}`);
   } else if (action === 'cancel') {
     pendingEntries.delete(chatId);
     userStates.delete(chatId);
@@ -450,9 +466,11 @@ async function handleSummaryCommand(chatId) {
     await doc.loadInfo();
 
     const budgetSheet = doc.sheetsByTitle['Budgets'];
+    if (budgetSheet) budgetSheet.resetLocalCache();
     const budgetRows = budgetSheet ? await budgetSheet.getRows() : [];
 
     const expenseSheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
+    expenseSheet.resetLocalCache();
     const expenseRows = await expenseSheet.getRows();
 
     const now = new Date();
@@ -567,8 +585,9 @@ async function handleQuery(message) {
     return handleAddCommand(chatId, text);
   }
 
-  // Check if user is editing total
-  if (userStates.get(chatId) === 'awaiting_edit') {
+  // Check if user is editing (total or category)
+  const state = userStates.get(chatId);
+  if (state?.type === 'edit_total') {
     const newTotal = parseFloat(message.text.replace(/[^0-9.]/g, ''));
 
     if (isNaN(newTotal)) {
@@ -585,6 +604,36 @@ async function handleQuery(message) {
 
     // Update the total
     pending.extracted.total = newTotal;
+    userStates.delete(chatId);
+
+    // Show updated confirmation
+    const confidence = Number(pending.extracted.confidence || 0);
+    await sendConfirmation(chatId, pending.extracted, confidence);
+    return;
+  } else if (state?.type === 'edit_category') {
+    const pending = pendingEntries.get(chatId);
+    if (!pending) {
+      userStates.delete(chatId);
+      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
+      return;
+    }
+
+    // Try number first, then category name/alias
+    let category = null;
+    const num = parseInt(message.text.trim());
+    if (!isNaN(num) && num >= 1 && num <= CATEGORIES.length) {
+      category = CATEGORIES[num - 1];
+    } else {
+      category = findCategory(message.text.trim());
+    }
+
+    if (!category) {
+      await bot.sendMessage(chatId, '⚠️ Invalid category. Try again or type a number (1-18).');
+      return;
+    }
+
+    // Update the category
+    pending.extracted.category = category;
     userStates.delete(chatId);
 
     // Show updated confirmation
@@ -608,8 +657,13 @@ async function handleQuery(message) {
   );
 }
 
-// Start Express
+// Start Express (skip during tests)
 const port = 3000;
-app.listen(port, () => {
-  console.log(`Bot server running on port ${port}`);
-});
+if (!isTest) {
+  app.listen(port, () => {
+    console.log(`Bot server running on port ${port}`);
+  });
+}
+
+// Export for testing
+module.exports = { findCategory, CATEGORIES, CATEGORY_ALIASES };
