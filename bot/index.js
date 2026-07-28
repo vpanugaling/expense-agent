@@ -6,6 +6,8 @@ const { google } = require('googleapis');
 const { CATEGORIES, PAYMENT_METHODS, findCategory } = require('./categories');
 const { createSheetsClient } = require('./sheets-client');
 const { createReceiptFlow } = require('./receipt-flow');
+const { createCardSheets } = require('./card/sheets');
+const { createCardCommands } = require('./card/commands');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -58,6 +60,11 @@ const receiptFlow = isTest ? null : createReceiptFlow({
   },
 });
 if (receiptFlow) flowHandlers.push(receiptFlow);
+
+// Card command handlers. cardSheets is a thin adapter over sheetsClient.getDoc()
+// so the same lazy singleton + TTL applies to CreditCards writes.
+const cardSheets = isTest ? null : createCardSheets({ getDoc: () => sheetsClient.getDoc() });
+const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets });
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {
@@ -489,6 +496,9 @@ async function handleQuery(message) {
   }
   if (text.startsWith('/add ')) {
     return handleAddCommand(chatId, text);
+  }
+  if (text === '/card' || text.startsWith('/card ')) {
+    return cardCommands.dispatch(chatId, text);
   }
 
   // Delegate free-text to the flow registry (e.g. mid-edit responses).

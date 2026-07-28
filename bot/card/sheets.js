@@ -1,3 +1,14 @@
+function rowToCard(row) {
+  return {
+    card_name: row.get('card_name'),
+    last4: row.get('last4'),
+    credit_limit: Number(row.get('credit_limit')),
+    statement_day: Number(row.get('statement_day')),
+    due_day: Number(row.get('due_day')),
+    created_at: row.get('created_at'),
+  };
+}
+
 function createCardSheets({ getDoc }) {
   async function getTab(name) {
     const doc = await getDoc();
@@ -11,7 +22,31 @@ function createCardSheets({ getDoc }) {
     return sheet;
   }
 
-  return { getTab };
+  async function listCards() {
+    const sheet = await getTab('CreditCards');
+    const rows = await sheet.getRows();
+    return rows.map(rowToCard);
+  }
+
+  async function findCard(cardName) {
+    const target = String(cardName).trim().toLowerCase();
+    const cards = await listCards();
+    return cards.find((c) => String(c.card_name).toLowerCase() === target) || null;
+  }
+
+  async function addCard(card) {
+    const sheet = await getTab('CreditCards');
+    await sheet.addRow({
+      card_name: card.card_name,
+      last4: card.last4,
+      credit_limit: card.credit_limit,
+      statement_day: card.statement_day,
+      due_day: card.due_day,
+      created_at: card.created_at,
+    });
+  }
+
+  return { getTab, listCards, findCard, addCard };
 }
 
 module.exports = { createCardSheets };
