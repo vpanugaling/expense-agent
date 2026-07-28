@@ -2,9 +2,9 @@ const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const FormData = require('form-data');
-const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { google } = require('googleapis');
 const { CATEGORIES, PAYMENT_METHODS, CATEGORY_ALIASES, findCategory } = require('./categories');
+const { createSheetsClient } = require('./sheets-client');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -43,6 +43,10 @@ if (!isTest) {
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
 }
+
+// Sheets client: lazy singleton with 5-min TTL. Handlers call sheetsClient.getDoc()
+// instead of instantiating GoogleSpreadsheet + loadInfo per invocation.
+const sheetsClient = createSheetsClient({ sheetId: SHEET_ID, auth });
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {
@@ -332,8 +336,7 @@ async function saveToSheets(chatId, pending) {
     const { extracted, ocrConf } = pending;
 
     console.log('📊 Adding to Google Sheets...');
-    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
-    await doc.loadInfo();
+    const doc = await sheetsClient.getDoc();
 
     const sheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
 
@@ -384,8 +387,7 @@ async function handleBudgetCommand(chatId, text) {
   const effectiveFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
   try {
-    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
-    await doc.loadInfo();
+    const doc = await sheetsClient.getDoc();
 
     const budgetSheet = doc.sheetsByTitle['Budgets'];
     if (!budgetSheet) {
@@ -419,8 +421,7 @@ async function handleBudgetCommand(chatId, text) {
 // Handle /summary command
 async function handleSummaryCommand(chatId) {
   try {
-    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
-    await doc.loadInfo();
+    const doc = await sheetsClient.getDoc();
 
     const budgetSheet = doc.sheetsByTitle['Budgets'];
     const budgetRows = budgetSheet ? await budgetSheet.getRows() : [];
@@ -488,8 +489,7 @@ async function handleAddCommand(chatId, text) {
   }
 
   try {
-    const doc = new GoogleSpreadsheet(SHEET_ID, auth);
-    await doc.loadInfo();
+    const doc = await sheetsClient.getDoc();
 
     const sheet = doc.sheetsByTitle['Expenses'] || doc.sheetsByIndex[0];
     const today = new Date().toISOString().split('T')[0];
