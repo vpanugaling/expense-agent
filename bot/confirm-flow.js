@@ -75,7 +75,8 @@ function createConfirmFlow({
     }
 
     const data = pending.get(chatId);
-    data[field] = result.value;
+    const dataKey = editors[field].dataKey || field;
+    data[dataKey] = result.value;
     awaiting.delete(chatId);
     await render(chatId, data);
     return true;

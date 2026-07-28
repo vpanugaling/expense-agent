@@ -3,8 +3,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const FormData = require('form-data');
 const { google } = require('googleapis');
-const { CATEGORIES, PAYMENT_METHODS, CATEGORY_ALIASES, findCategory } = require('./categories');
+const { CATEGORIES, PAYMENT_METHODS, findCategory } = require('./categories');
 const { createSheetsClient } = require('./sheets-client');
+const { createReceiptFlow } = require('./receipt-flow');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -16,9 +17,10 @@ const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS || '').split(',').filter(
 const DEFAULT_CURRENCY = process.env.DEFAULT_CURRENCY || 'PHP';
 const GOOGLE_CREDENTIALS_PATH = '/secrets/google-sa.json';
 
-// In-memory storage for pending confirmations
-const pendingEntries = new Map(); // chatId -> { extracted, ocrConf, ocrText, timestamp }
-const userStates = new Map();     // chatId -> "awaiting_edit" | null
+// Prefix-based callback + text-input registry. Each entry exposes
+// { handleCallback, handleTextInput } and returns true when it handles the event.
+// Order matters: first match wins.
+const flowHandlers = [];
 
 const app = express();
 app.use(express.raw({ type: 'application/json' }));
@@ -47,6 +49,15 @@ if (!isTest) {
 // Sheets client: lazy singleton with 5-min TTL. Handlers call sheetsClient.getDoc()
 // instead of instantiating GoogleSpreadsheet + loadInfo per invocation.
 const sheetsClient = createSheetsClient({ sheetId: SHEET_ID, auth });
+
+// Receipt confirm flow. onConfirm receives the possibly-edited extracted fields.
+const receiptFlow = isTest ? null : createReceiptFlow({
+  bot,
+  onConfirm: async (chatId, extracted) => {
+    await saveToSheets(chatId, extracted);
+  },
+});
+if (receiptFlow) flowHandlers.push(receiptFlow);
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {
@@ -242,15 +253,10 @@ Return ONLY valid JSON with these keys. No markdown, no explanation.`;
     const confidence = Number(extracted.confidence || 0);
     console.log('✅ Gemini extracted:', JSON.stringify(extracted, null, 2));
 
-    // 4) Store pending entry and ask for confirmation
-    pendingEntries.set(chatId, {
-      extracted,
-      ocrConf,
-      ocrText,
-      timestamp: Date.now()
-    });
-
-    await sendConfirmation(chatId, extracted, confidence);
+    // 4) Hand off to the receipt confirm flow (renders summary + inline keyboard).
+    // ocr_confidence is folded into the data object so it passes through to the
+    // sheet write on Confirm without a side-channel.
+    await receiptFlow.start(chatId, { ...extracted, ocr_confidence: ocrConf });
 
   } catch (err) {
     console.error('handleReceipt error:', err.message);
@@ -259,82 +265,27 @@ Return ONLY valid JSON with these keys. No markdown, no explanation.`;
   }
 }
 
-// Send confirmation message with inline keyboard
-async function sendConfirmation(chatId, extracted, confidence) {
-  const total = Number(extracted.total || 0);
-  const summary =
-    `📸 *Receipt Extracted:*\n\n` +
-    `• *Merchant:* ${extracted.merchant || 'Unknown'}\n` +
-    `• *Total:* ₱${total.toLocaleString()}\n` +
-    `• *Category:* ${extracted.category || 'Other'}\n` +
-    `• *Payment:* ${extracted.payment_method || 'Cash'}\n` +
-    `• *Date:* ${extracted.receipt_date || 'Unknown'}\n` +
-    `• *AI confidence:* ${(confidence * 100).toFixed(0)}%`;
-
-  await bot.sendMessage(chatId, summary, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '✅ Confirm', callback_data: 'confirm' },
-          { text: '✏️ Edit Total', callback_data: 'edit_total' },
-        ],
-        [
-          { text: '📁 Edit Category', callback_data: 'edit_category' },
-          { text: '📅 Edit Date', callback_data: 'edit_date' },
-        ],
-        [
-          { text: '❌ Cancel', callback_data: 'cancel' }
-        ]
-      ]
-    }
-  });
-}
-
-// Handle callback queries (button clicks)
+// Dispatch callback queries through the registered flow handlers (prefix-based).
 async function handleCallback(callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const userId = callbackQuery.from.id.toString();
   const action = callbackQuery.data;
 
-  // Acknowledge the callback
   await bot.answerCallbackQuery(callbackQuery.id);
 
   if (!ALLOWED_USER_IDS.includes(userId)) {
     return bot.sendMessage(chatId, '❌ Not authorized.');
   }
 
-  const pending = pendingEntries.get(chatId);
-  if (!pending) {
-    return bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
-  }
-
-  if (action === 'confirm') {
-    await saveToSheets(chatId, pending);
-    pendingEntries.delete(chatId);
-    userStates.delete(chatId);
-  } else if (action === 'edit_total') {
-    userStates.set(chatId, { type: 'edit_total' });
-    await bot.sendMessage(chatId, '✏️ Type the correct total (e.g., 450.50):');
-  } else if (action === 'edit_category') {
-    userStates.set(chatId, { type: 'edit_category' });
-    const categoryList = CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
-    await bot.sendMessage(chatId, `📁 Reply with category name or number:\n\n${categoryList}`);
-  } else if (action === 'edit_date') {
-    userStates.set(chatId, { type: 'edit_date' });
-    await bot.sendMessage(chatId, '📅 Type the correct date (YYYY-MM-DD or "today", "yesterday"):');
-  } else if (action === 'cancel') {
-    pendingEntries.delete(chatId);
-    userStates.delete(chatId);
-    await bot.sendMessage(chatId, '❌ Receipt cancelled. Send another photo when ready.');
+  for (const handler of flowHandlers) {
+    if (await handler.handleCallback(chatId, action)) return;
   }
 }
 
-// Save confirmed entry to Google Sheets
-async function saveToSheets(chatId, pending) {
+// Save confirmed entry to Google Sheets. `extracted` may include ocr_confidence
+// folded in by the receipt-flow start.
+async function saveToSheets(chatId, extracted) {
   try {
-    const { extracted, ocrConf } = pending;
-
     console.log('📊 Adding to Google Sheets...');
     const doc = await sheetsClient.getDoc();
 
@@ -349,7 +300,7 @@ async function saveToSheets(chatId, pending) {
       category: extracted.category || 'Other',
       payment_method: extracted.payment_method || 'Other',
       notes: extracted.notes || '',
-      ocr_confidence: ocrConf
+      ocr_confidence: extracted.ocr_confidence
     });
 
     const total = Number(extracted.total || 0);
@@ -540,107 +491,9 @@ async function handleQuery(message) {
     return handleAddCommand(chatId, text);
   }
 
-  // Check if user is editing (total or category)
-  const state = userStates.get(chatId);
-  if (state?.type === 'edit_total') {
-    const newTotal = parseFloat(message.text.replace(/[^0-9.]/g, ''));
-
-    if (isNaN(newTotal)) {
-      await bot.sendMessage(chatId, '⚠️ Invalid number. Please type the total (e.g., 450.50):');
-      return;
-    }
-
-    const pending = pendingEntries.get(chatId);
-    if (!pending) {
-      userStates.delete(chatId);
-      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
-      return;
-    }
-
-    // Update the total
-    pending.extracted.total = newTotal;
-    userStates.delete(chatId);
-
-    // Show updated confirmation
-    const confidence = Number(pending.extracted.confidence || 0);
-    await sendConfirmation(chatId, pending.extracted, confidence);
-    return;
-  } else if (state?.type === 'edit_category') {
-    const pending = pendingEntries.get(chatId);
-    if (!pending) {
-      userStates.delete(chatId);
-      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
-      return;
-    }
-
-    // Try number first, then category name/alias
-    let category = null;
-    const num = parseInt(message.text.trim());
-    if (!isNaN(num) && num >= 1 && num <= CATEGORIES.length) {
-      category = CATEGORIES[num - 1];
-    } else {
-      category = findCategory(message.text.trim());
-    }
-
-    if (!category) {
-      await bot.sendMessage(chatId, '⚠️ Invalid category. Try again or type a number (1-18).');
-      return;
-    }
-
-    // Update the category
-    pending.extracted.category = category;
-    userStates.delete(chatId);
-
-    // Show updated confirmation
-    const confidence = Number(pending.extracted.confidence || 0);
-    await sendConfirmation(chatId, pending.extracted, confidence);
-    return;
-  } else if (state?.type === 'edit_date') {
-    const pending = pendingEntries.get(chatId);
-    if (!pending) {
-      userStates.delete(chatId);
-      await bot.sendMessage(chatId, '⚠️ No pending receipt. Please send a new photo.');
-      return;
-    }
-
-    const dateStr = message.text.trim().toLowerCase();
-    let parsedDate = null;
-
-    // Handle natural language dates
-    const today = new Date();
-    if (dateStr === 'today') {
-      parsedDate = today.toISOString().split('T')[0];
-    } else if (dateStr === 'yesterday') {
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      parsedDate = yesterday.toISOString().split('T')[0];
-    } else {
-      // Try to parse YYYY-MM-DD format
-      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (match) {
-        parsedDate = dateStr;
-      } else {
-        // Try natural date parsing (e.g., "march 13", "mar 13 2026")
-        const naturalDate = new Date(dateStr);
-        if (!isNaN(naturalDate.getTime())) {
-          parsedDate = naturalDate.toISOString().split('T')[0];
-        }
-      }
-    }
-
-    if (!parsedDate) {
-      await bot.sendMessage(chatId, '⚠️ Invalid date format. Try YYYY-MM-DD, "today", or "yesterday".');
-      return;
-    }
-
-    // Update the date
-    pending.extracted.receipt_date = parsedDate;
-    userStates.delete(chatId);
-
-    // Show updated confirmation
-    const confidence = Number(pending.extracted.confidence || 0);
-    await sendConfirmation(chatId, pending.extracted, confidence);
-    return;
+  // Delegate free-text to the flow registry (e.g. mid-edit responses).
+  for (const handler of flowHandlers) {
+    if (await handler.handleTextInput(chatId, message.text)) return;
   }
 
   console.log('✅ User authorized, handling query:', message.text);
