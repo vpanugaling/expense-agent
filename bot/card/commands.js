@@ -38,8 +38,25 @@ function parseCardAdd(argsText) {
   };
 }
 
+function parseCardRename(argsText) {
+  const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 2) {
+    return { valid: false, error: 'Usage: /card rename <old-nickname> <new-nickname>' };
+  }
+  const [oldName, newName] = parts;
+  const n = validateNickname(newName);
+  if (!n.valid) return { valid: false, error: `New nickname: ${n.error}` };
+  return { valid: true, values: { oldName, newName: n.value } };
+}
+
 function formatPeso(n) {
   return Number(n).toLocaleString('en-US');
+}
+
+const RENAME_TABS = ['CreditCards', 'CardTransactions', 'CardStatements'];
+
+function missingTabMessage() {
+  return '⚠️ CreditCards tab not found. Please create a "CreditCards" tab with columns: card_name, last4, credit_limit, statement_day, due_day, created_at.';
 }
 
 function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
@@ -77,10 +94,7 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
       );
     } catch (err) {
       if (err.code === 'MISSING_TAB') {
-        return bot.sendMessage(
-          chatId,
-          '⚠️ CreditCards tab not found. Please create a "CreditCards" tab with columns: card_name, last4, credit_limit, statement_day, due_day, created_at.',
-        );
+        return bot.sendMessage(chatId, missingTabMessage());
       }
       throw err;
     }
@@ -116,6 +130,87 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
     return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
   }
 
+  async function handleRename(chatId, argsText) {
+    const parsed = parseCardRename(argsText);
+    if (!parsed.valid) {
+      return bot.sendMessage(chatId, `⚠️ ${parsed.error}`);
+    }
+    const { oldName, newName } = parsed.values;
+
+    // Load the old card first — this both validates existence and gives us
+    // the canonically-stored card_name to use in success/error messages.
+    let oldCard;
+    try {
+      oldCard = await cardSheets.findCard(oldName);
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return bot.sendMessage(chatId, missingTabMessage());
+      throw err;
+    }
+    if (!oldCard) {
+      return bot.sendMessage(chatId, `⚠️ Card "${oldName}" not found.`);
+    }
+
+    // Collision check: reject only if the new name is taken by a DIFFERENT card.
+    // Case-only rename of the same card is allowed.
+    const collision = await cardSheets.findCard(newName);
+    if (collision && collision.card_name.toLowerCase() !== oldCard.card_name.toLowerCase()) {
+      return bot.sendMessage(
+        chatId,
+        `⚠️ Card "${collision.card_name}" already exists. Choose a different nickname.`,
+      );
+    }
+
+    // Forward pass. First tab (CreditCards) is required; the others are
+    // optional because they may not exist yet in a fresh setup.
+    const canonicalOld = oldCard.card_name;
+    const written = [];
+    try {
+      for (const tab of RENAME_TABS) {
+        const optional = tab !== 'CreditCards';
+        const { changed } = await cardSheets.renameCardInTab(tab, canonicalOld, newName, { optional });
+        if (changed > 0) written.push(tab);
+      }
+    } catch (forwardErr) {
+      // Rollback: reverse order, only tabs actually written.
+      const rolledBack = [];
+      const rollbackFailed = [];
+      for (const tab of [...written].reverse()) {
+        try {
+          await cardSheets.renameCardInTab(tab, newName, canonicalOld, { optional: true });
+          rolledBack.push(tab);
+        } catch (rbErr) {
+          rollbackFailed.push({ tab, error: rbErr.message });
+        }
+      }
+      // Also include the tab we were attempting when forward failed (nothing
+      // was written to it, so no rollback needed there — it's the failure point).
+      const failedTab = RENAME_TABS.find((t) => !written.includes(t)) || 'unknown';
+
+      if (rollbackFailed.length === 0) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Rename failed on ${failedTab} (${forwardErr.message}).\n` +
+            `Rolled back cleanly: ${rolledBack.join(', ') || 'none'}.\n` +
+            `Sheet is in original state.`,
+        );
+      }
+      const rbList = rollbackFailed.map((r) => `${r.tab} (${r.error})`).join(', ');
+      return bot.sendMessage(
+        chatId,
+        `🚨 Rename failed on ${failedTab} (${forwardErr.message}) AND rollback failed.\n` +
+          `Rolled back cleanly: ${rolledBack.join(', ') || 'none'}.\n` +
+          `Rollback failed: ${rbList}.\n` +
+          `Please manually reconcile the affected tabs.`,
+      );
+    }
+
+    return bot.sendMessage(
+      chatId,
+      `✅ Renamed *${canonicalOld}* → *${newName}* (updated: ${written.join(', ')})`,
+      { parse_mode: 'Markdown' },
+    );
+  }
+
   async function dispatch(chatId, text) {
     const trimmed = String(text || '').trim();
     if (!/^\/card(\s|$)/.test(trimmed)) return false;
@@ -127,7 +222,8 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
         '💳 *Card commands*\n\n' +
           'Usage:\n' +
           '/card add <nickname> <last4> <credit_limit> <statement_day> <due_day>\n' +
-          '/card list — show all registered cards',
+          '/card list — show all registered cards\n' +
+          '/card rename <old-nickname> <new-nickname>',
         { parse_mode: 'Markdown' },
       );
       return true;
@@ -145,15 +241,19 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
       await handleList(chatId);
       return true;
     }
+    if (sub === 'rename') {
+      await handleRename(chatId, subArgs);
+      return true;
+    }
 
     await bot.sendMessage(
       chatId,
-      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list`,
+      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename`,
     );
     return true;
   }
 
-  return { handleAdd, handleList, dispatch };
+  return { handleAdd, handleList, handleRename, dispatch };
 }
 
-module.exports = { parseCardAdd, createCardCommands };
+module.exports = { parseCardAdd, parseCardRename, createCardCommands };

@@ -1,4 +1,4 @@
-const { parseCardAdd, createCardCommands } = require('../commands');
+const { parseCardAdd, parseCardRename, createCardCommands } = require('../commands');
 const { createCardSheets } = require('../sheets');
 const { createFakeDoc } = require('../../test-utils/fake-sheet');
 const { createMockBot } = require('../../test-utils/mock-bot');
@@ -133,6 +133,181 @@ describe('createCardCommands.handleList', () => {
   });
 });
 
+describe('parseCardRename', () => {
+  test('accepts two nicknames', () => {
+    const r = parseCardRename('BPI-Gold BPI-Platinum');
+    expect(r.valid).toBe(true);
+    expect(r.values).toEqual({ oldName: 'BPI-Gold', newName: 'BPI-Platinum' });
+  });
+
+  test('rejects wrong argument count', () => {
+    expect(parseCardRename('BPI-Gold').valid).toBe(false);
+    expect(parseCardRename('BPI-Gold BPI-Platinum extra').valid).toBe(false);
+    expect(parseCardRename('').valid).toBe(false);
+  });
+
+  test('rejects invalid new nickname', () => {
+    expect(parseCardRename('BPI-Gold "bad name"').valid).toBe(false);
+    expect(parseCardRename('BPI-Gold payment').valid).toBe(false);
+  });
+});
+
+describe('createCardCommands.handleRename', () => {
+  function baseTabs() {
+    return {
+      CreditCards: [
+        { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' },
+        { card_name: 'Metrobank', last4: '5678', credit_limit: '50000', statement_day: '5', due_day: '25' },
+      ],
+      CardTransactions: [
+        { card_name: 'BPI-Gold', tx_date: '2026-03-01', type: 'purchase', amount: '500' },
+        { card_name: 'BPI-Gold', tx_date: '2026-03-05', type: 'payment', amount: '200' },
+        { card_name: 'Metrobank', tx_date: '2026-03-02', type: 'purchase', amount: '300' },
+      ],
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '500' },
+      ],
+    };
+  }
+
+  test('rewrites card_name in all three tabs on happy path', async () => {
+    const { bot, doc, commands } = wire(baseTabs());
+    await commands.handleRename(1, 'BPI-Gold BPI-Platinum');
+    const cards = doc.sheetsByTitle.CreditCards._snapshot();
+    const txs = doc.sheetsByTitle.CardTransactions._snapshot();
+    const stmts = doc.sheetsByTitle.CardStatements._snapshot();
+    expect(cards.find((c) => c.last4 === '1234').card_name).toBe('BPI-Platinum');
+    expect(cards.find((c) => c.last4 === '5678').card_name).toBe('Metrobank');
+    expect(txs.filter((t) => t.card_name === 'BPI-Platinum')).toHaveLength(2);
+    expect(txs.filter((t) => t.card_name === 'Metrobank')).toHaveLength(1);
+    expect(stmts[0].card_name).toBe('BPI-Platinum');
+    expect(bot.lastSent().text).toMatch(/Renamed/);
+    expect(bot.lastSent().text).toContain('BPI-Gold');
+    expect(bot.lastSent().text).toContain('BPI-Platinum');
+  });
+
+  test('succeeds when only CreditCards tab exists (no tx/stmts tabs yet)', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleRename(1, 'BPI-Gold BPI-Platinum');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Platinum');
+    expect(bot.lastSent().text).toMatch(/Renamed/);
+  });
+
+  test('is case-insensitive on old nickname', async () => {
+    const { doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleRename(1, 'bpi-gold BPI-Platinum');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Platinum');
+  });
+
+  test('rejects when old card is not found (case-insensitive)', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleRename(1, 'Unknown BPI-Platinum');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Gold');
+    expect(bot.lastSent().text).toMatch(/not found/i);
+  });
+
+  test('rejects when new nickname collides case-insensitively with a different card', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: [
+        { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' },
+        { card_name: 'Metrobank', last4: '5678', credit_limit: '50000', statement_day: '5', due_day: '25' },
+      ],
+    });
+    await commands.handleRename(1, 'BPI-Gold metrobank');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Gold');
+    expect(bot.lastSent().text).toMatch(/already exists/i);
+  });
+
+  test('allows case-only rename of the same card', async () => {
+    const { doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleRename(1, 'BPI-Gold bpi-gold');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('bpi-gold');
+  });
+
+  test('rejects invalid new nickname without writing', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleRename(1, 'BPI-Gold payment');
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Gold');
+    expect(bot.lastSent().text).toMatch(/⚠️/);
+  });
+
+  test('missing CreditCards tab shows setup message', async () => {
+    const { bot, commands } = wire({});
+    await commands.handleRename(1, 'BPI-Gold BPI-Platinum');
+    expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+
+  test('rolls back CreditCards cleanly when CardTransactions save fails', async () => {
+    const { bot, doc, commands } = wire(baseTabs());
+    const txSheet = doc.sheetsByTitle.CardTransactions;
+    const originalGetRows = txSheet.getRows.bind(txSheet);
+    txSheet.getRows = async () => {
+      const rows = await originalGetRows();
+      for (const r of rows) r.save = async () => { throw new Error('tx write failed'); };
+      return rows;
+    };
+
+    await commands.handleRename(1, 'BPI-Gold BPI-Platinum');
+
+    // CreditCards must be rolled back to the original name
+    const cards = doc.sheetsByTitle.CreditCards._snapshot();
+    expect(cards.find((c) => c.last4 === '1234').card_name).toBe('BPI-Gold');
+    // Message names the failed tab and confirms rollback
+    const text = bot.lastSent().text;
+    expect(text).toMatch(/failed/i);
+    expect(text).toContain('CardTransactions');
+    expect(text).toMatch(/rolled back/i);
+    expect(text).toContain('CreditCards');
+  });
+
+  test('surfaces both errors clearly when rollback itself fails', async () => {
+    const { bot, doc, commands } = wire(baseTabs());
+    const txSheet = doc.sheetsByTitle.CardTransactions;
+    const origTxGetRows = txSheet.getRows.bind(txSheet);
+    txSheet.getRows = async () => {
+      const rows = await origTxGetRows();
+      for (const r of rows) r.save = async () => { throw new Error('tx write failed'); };
+      return rows;
+    };
+    // Fail rollback: forward save on CreditCards succeeds, but any save AFTER
+    // the CardTransactions failure (i.e. rollback) fails. Toggle via a flag
+    // that flips when the tx failure fires above.
+    let txHasFailed = false;
+    const txSheetOriginal = txSheet.getRows;
+    txSheet.getRows = async () => {
+      const rows = await txSheetOriginal();
+      for (const r of rows) r.save = async () => { txHasFailed = true; throw new Error('tx write failed'); };
+      return rows;
+    };
+    const ccSheet = doc.sheetsByTitle.CreditCards;
+    const origCcGetRows = ccSheet.getRows.bind(ccSheet);
+    ccSheet.getRows = async () => {
+      const rows = await origCcGetRows();
+      if (txHasFailed) {
+        for (const r of rows) r.save = async () => { throw new Error('rollback write failed'); };
+      }
+      return rows;
+    };
+
+    await commands.handleRename(1, 'BPI-Gold BPI-Platinum');
+
+    const text = bot.lastSent().text;
+    expect(text).toMatch(/rollback.*failed|failed.*rollback|manually reconcile/i);
+    expect(text).toContain('CardTransactions');
+    expect(text).toContain('CreditCards');
+  });
+});
+
 describe('createCardCommands.dispatch', () => {
   test('routes /card add to handleAdd', async () => {
     const { doc, commands } = wire();
@@ -146,6 +321,16 @@ describe('createCardCommands.dispatch', () => {
     const handled = await commands.dispatch(1, '/card list');
     expect(handled).toBe(true);
     expect(bot.lastSent().text).toMatch(/no cards/i);
+  });
+
+  test('routes /card rename to handleRename', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    const handled = await commands.dispatch(1, '/card rename BPI-Gold BPI-Platinum');
+    expect(handled).toBe(true);
+    expect(doc.sheetsByTitle.CreditCards._snapshot()[0].card_name).toBe('BPI-Platinum');
+    expect(bot.lastSent().text).toMatch(/Renamed/);
   });
 
   test('bare /card shows usage', async () => {

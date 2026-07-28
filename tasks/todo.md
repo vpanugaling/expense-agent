@@ -32,10 +32,11 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
   - Files: `bot/card/commands.js`, `bot/card/sheets.js`, `bot/card/balance.js`, `bot/card/__tests__/*`, `bot/index.js`.
   - Status: 129/129 tests pass (19 new commands tests, 12 sheets tests, 8 balance tests). Manual Telegram verification pending.
 
-- [ ] **Task 1b** — `/card rename` with best-effort rollback
+- [x] **Task 1b** — `/card rename` with best-effort rollback
   - Acceptance: renames across 3 tabs; collision/missing/invalid rejected; simulated tab-2 failure triggers rollback; rollback-of-rollback failure surfaces both errors clearly.
   - Verify: `cd bot && npm test` (rename tests via 9A seam); manual rename.
   - Files: `bot/card/commands.js`, `bot/card/sheets.js`, `bot/card/__tests__/*`.
+  - Status: 149/149 tests pass (+20 rename tests). CardTransactions/CardStatements treated as optional (may not exist yet); case-only rename of same card allowed; rollback + rollback-of-rollback paths covered.
 
 - [ ] **Checkpoint: Registration** — tests green, duplicate rejected, rename verified, human review before Phase 2.
 

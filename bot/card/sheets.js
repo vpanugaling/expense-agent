@@ -46,7 +46,32 @@ function createCardSheets({ getDoc }) {
     });
   }
 
-  return { getTab, listCards, findCard, addCard };
+  // Rewrite card_name in every row whose current card_name matches oldName
+  // (case-insensitively). Returns { changed } — the count of rows saved.
+  // { optional: true } converts MISSING_TAB into { changed: 0 } so callers can
+  // treat not-yet-created tabs (CardTransactions, CardStatements) as no-ops.
+  async function renameCardInTab(tabName, oldName, newName, { optional = false } = {}) {
+    let sheet;
+    try {
+      sheet = await getTab(tabName);
+    } catch (err) {
+      if (err.code === 'MISSING_TAB' && optional) return { changed: 0 };
+      throw err;
+    }
+    const rows = await sheet.getRows();
+    const target = String(oldName).toLowerCase();
+    let changed = 0;
+    for (const row of rows) {
+      if (String(row.get('card_name')).toLowerCase() === target) {
+        row.set('card_name', newName);
+        await row.save();
+        changed += 1;
+      }
+    }
+    return { changed };
+  }
+
+  return { getTab, listCards, findCard, addCard, renameCardInTab };
 }
 
 module.exports = { createCardSheets };

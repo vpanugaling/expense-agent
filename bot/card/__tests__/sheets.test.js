@@ -127,3 +127,72 @@ describe('createCardSheets.addCard', () => {
     await expect(sheets.addCard({ card_name: 'X' })).rejects.toMatchObject({ code: 'MISSING_TAB' });
   });
 });
+
+describe('createCardSheets.renameCardInTab', () => {
+  test('rewrites matching rows and returns the count of rows changed', async () => {
+    const doc = createFakeDoc({
+      CreditCards: [
+        { card_name: 'BPI-Gold', last4: '1234' },
+        { card_name: 'Metrobank', last4: '5678' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const result = await sheets.renameCardInTab('CreditCards', 'BPI-Gold', 'BPI-Platinum');
+    expect(result).toEqual({ changed: 1 });
+    const rows = doc.sheetsByTitle.CreditCards._snapshot();
+    expect(rows[0].card_name).toBe('BPI-Platinum');
+    expect(rows[1].card_name).toBe('Metrobank');
+  });
+
+  test('matches case-insensitively on card_name', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { card_name: 'BPI-Gold', amount: 100 },
+        { card_name: 'bpi-gold', amount: 200 },
+        { card_name: 'Other', amount: 300 },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const result = await sheets.renameCardInTab('CardTransactions', 'bpi-gold', 'BPI-Platinum');
+    expect(result).toEqual({ changed: 2 });
+    const rows = doc.sheetsByTitle.CardTransactions._snapshot();
+    expect(rows.map((r) => r.card_name)).toEqual(['BPI-Platinum', 'BPI-Platinum', 'Other']);
+  });
+
+  test('returns { changed: 0 } when tab is missing and { optional: true }', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    const result = await sheets.renameCardInTab('CardTransactions', 'A', 'B', { optional: true });
+    expect(result).toEqual({ changed: 0 });
+  });
+
+  test('throws MISSING_TAB when tab is missing and not optional', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    await expect(sheets.renameCardInTab('CreditCards', 'A', 'B')).rejects.toMatchObject({
+      code: 'MISSING_TAB',
+    });
+  });
+
+  test('returns { changed: 0 } when tab exists but no rows match', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [{ card_name: 'Other', amount: 100 }],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const result = await sheets.renameCardInTab('CardTransactions', 'Missing', 'New', { optional: true });
+    expect(result).toEqual({ changed: 0 });
+    expect(doc.sheetsByTitle.CardTransactions._snapshot()[0].card_name).toBe('Other');
+  });
+
+  test('propagates save() errors', async () => {
+    const doc = createFakeDoc({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234' }],
+    });
+    const originalGetRows = doc.sheetsByTitle.CreditCards.getRows.bind(doc.sheetsByTitle.CreditCards);
+    doc.sheetsByTitle.CreditCards.getRows = async () => {
+      const rows = await originalGetRows();
+      for (const r of rows) r.save = async () => { throw new Error('write failed'); };
+      return rows;
+    };
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    await expect(sheets.renameCardInTab('CreditCards', 'BPI-Gold', 'New')).rejects.toThrow('write failed');
+  });
+});
