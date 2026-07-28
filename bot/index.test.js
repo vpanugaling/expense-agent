@@ -1,4 +1,4 @@
-const { findCategory, CATEGORIES, CATEGORY_ALIASES } = require('./index');
+const { findCategory, CATEGORIES, CATEGORY_ALIASES } = require('./categories');
 
 describe('findCategory', () => {
   describe('exact match', () => {

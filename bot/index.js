@@ -4,6 +4,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { google } = require('googleapis');
+const { CATEGORIES, PAYMENT_METHODS, CATEGORY_ALIASES, findCategory } = require('./categories');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -14,54 +15,6 @@ const OCR_BASE_URL = process.env.OCR_BASE_URL || 'http://ocr:8080';
 const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS || '').split(',').filter(Boolean);
 const DEFAULT_CURRENCY = process.env.DEFAULT_CURRENCY || 'PHP';
 const GOOGLE_CREDENTIALS_PATH = '/secrets/google-sa.json';
-
-// Categories & payment methods
-const CATEGORIES = [
-  'Groceries', 'Eating out', 'Coffee/snacks', 'Transportation', 'Fuel',
-  'Utilities', 'Rent/dues', 'Internet/mobile load', 'Household supplies',
-  'Personal care', 'Medical/Pharmacy', 'Kids/Family', 'Shopping',
-  'Subscriptions', 'Gifts/Donations', 'Travel', 'Fees/Bank charges', 'Other'
-];
-
-const PAYMENT_METHODS = ['Cash', 'GCash', 'Card', 'Bank Transfer', 'Other'];
-
-// Category aliases for fuzzy matching
-const CATEGORY_ALIASES = {
-  'grocery': 'Groceries', 'supermarket': 'Groceries',
-  'food': 'Eating out', 'eating': 'Eating out', 'restaurant': 'Eating out', 'dine': 'Eating out', 'dining': 'Eating out',
-  'coffee': 'Coffee/snacks', 'snacks': 'Coffee/snacks', 'cafe': 'Coffee/snacks',
-  'transport': 'Transportation', 'grab': 'Transportation', 'taxi': 'Transportation', 'fare': 'Transportation',
-  'gas': 'Fuel', 'petrol': 'Fuel',
-  'utility': 'Utilities', 'electric': 'Utilities', 'water': 'Utilities', 'meralco': 'Utilities',
-  'rent': 'Rent/dues', 'dues': 'Rent/dues', 'hoa': 'Rent/dues',
-  'internet': 'Internet/mobile load', 'mobile': 'Internet/mobile load', 'load': 'Internet/mobile load', 'data': 'Internet/mobile load', 'wifi': 'Internet/mobile load',
-  'household': 'Household supplies', 'supplies': 'Household supplies', 'cleaning': 'Household supplies',
-  'personal': 'Personal care', 'salon': 'Personal care', 'haircut': 'Personal care',
-  'medical': 'Medical/Pharmacy', 'medicine': 'Medical/Pharmacy', 'pharmacy': 'Medical/Pharmacy', 'meds': 'Medical/Pharmacy', 'doctor': 'Medical/Pharmacy', 'hospital': 'Medical/Pharmacy',
-  'kids': 'Kids/Family', 'family': 'Kids/Family', 'children': 'Kids/Family',
-  'shopping': 'Shopping', 'shop': 'Shopping', 'clothes': 'Shopping', 'lazada': 'Shopping', 'shopee': 'Shopping',
-  'subscription': 'Subscriptions', 'netflix': 'Subscriptions', 'spotify': 'Subscriptions',
-  'gift': 'Gifts/Donations', 'gifts': 'Gifts/Donations', 'donation': 'Gifts/Donations',
-  'travel': 'Travel', 'vacation': 'Travel', 'hotel': 'Travel', 'flight': 'Travel',
-  'fees': 'Fees/Bank charges', 'bank': 'Fees/Bank charges', 'atm': 'Fees/Bank charges',
-  'other': 'Other', 'misc': 'Other'
-};
-
-// Find category by exact match, alias, or partial match
-function findCategory(input) {
-  const normalized = input.toLowerCase().trim();
-  if (!normalized) return null;
-  // 1. Exact match
-  const exact = CATEGORIES.find(c => c.toLowerCase() === normalized);
-  if (exact) return exact;
-  // 2. Alias match
-  const aliasMatch = CATEGORY_ALIASES[normalized];
-  if (aliasMatch) return aliasMatch;
-  // 3. Partial match
-  const partial = CATEGORIES.find(c => c.toLowerCase().includes(normalized));
-  if (partial) return partial;
-  return null;
-}
 
 // In-memory storage for pending confirmations
 const pendingEntries = new Map(); // chatId -> { extracted, ocrConf, ocrText, timestamp }
@@ -713,5 +666,3 @@ if (!isTest) {
   });
 }
 
-// Export for testing
-module.exports = { findCategory, CATEGORIES, CATEGORY_ALIASES };
