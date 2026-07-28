@@ -13,6 +13,10 @@ services:
   bot:
     image: node:20-alpine
     working_dir: /app
+    # TZ pins wall-clock time so node-cron reminders fire at 9pm PHT (decision 7A).
+    # Docker containers default to UTC, which would fire the job 8h early.
+    environment:
+      TZ: Asia/Manila
     volumes:
       - ./bot:/app
       - ./secrets:/secrets:ro
