@@ -296,16 +296,20 @@ At Confirm time, the payment row's `statement_cycle` is derived:
 - **`bot/card/sheets.js`** *(extended)*: `addTransaction` generates a `tx_id` if absent. `listTransactions` synthesizes `tx_id` for legacy rows on read (so downstream code sees a consistent shape). No mutation of existing purchase rows — paid state is always derived from payment rows.
 - **`bot/card/commands.js`** *(modified)*: `handleTx`, payment branch, now calls `purchasePicker.start(...)` instead of `paymentFlow.start(...)`.
 - **`bot/card/balance.js`** *(extended)*: `computeOpenCycles` unchanged in shape. Its `paid` accounting continues to sum by `statement_cycle`, so purchase-tagged payments (which derive `statement_cycle`) settle their cycle correctly. New purity: no behavior change for legacy payments.
-- **`bot/card/payment-flow.js`** *(unchanged in this extension)*: retained for now — internal-only. Wire in `bot/index.js` is updated so `/card tx payment` routes to `purchasePicker`, but `paymentFlow` module remains and is not removed (removal is a separate cleanup task, "Ask first" per Boundaries).
+- **`bot/card/payment-flow.js`** *(removed in Task E3)*: the cycle-picker payment flow is deleted. The purchase-tagged picker replaces it entirely — a corrective legacy payment can still be logged manually by adding a row to `CardTransactions` with `paid_purchases` empty.
+- **`bot/two-phase-picker.js`** *(new, generic)*: reusable picker→confirm state machine. `bot/card/purchase-picker.js` composes it with card-specific `pickerRender` and `onPick`. Documented concurrency posture: a re-`start()` on the same chat silently replaces the pending state; old inline-keyboard messages remain visible, but their callbacks resolve against the new state and unknown tokens are treated as no-ops by the caller's `onPick`.
 
 ## Callback Naming
 
-New prefix: `card_purchase_pick_*` for the picker phase (parallel to the existing `card_payment_pick_*`):
-- `card_purchase_pick_toggle_<tx_id>` — toggle a purchase selection.
-- `card_purchase_pick_done` — advance to confirm-flow.
-- `card_purchase_pick_cancel` — abort picker phase (intercepted before confirm-flow onStale, same pattern as `payment-flow.js`).
+Picker + confirm phases share the same prefix `card_ppay_` (short for "purchase-tagged payment"). The two-phase-picker abstraction owns the `pick_` sub-namespace; the confirm-flow owns the rest:
+- `card_ppay_pick_toggle_<tx_id>` — toggle a purchase selection.
+- `card_ppay_pick_done` — advance to confirm-flow (blocked unless SUM(selected) === typed amount; see T4 constraint).
+- `card_ppay_pick_cancel` — abort picker phase (intercepted before confirm-flow onStale).
+- `card_ppay_confirm` / `card_ppay_edit_amount` / `card_ppay_edit_date` / `card_ppay_cancel` — confirm-phase callbacks.
 
-The confirm-flow itself uses prefix `card_purchase_payment_*` to avoid collision with `card_purchase_*` (existing purchase-tx flow).
+**T4 sum-enforcement invariant:** the picker's Done button blocks progression unless the sum of selected purchases exactly equals the typed payment amount. Editing the amount later in the confirm phase is allowed (scalar edit) but does *not* re-open the picker — to change the tagged set the user cancels and starts a new /card tx. This keeps the confirm-flow's scalar-editor contract clean.
+
+**P3 chattiness note:** each toggle triggers a Telegram `editMessageText` (~200ms round-trip). Practical UX ceiling is ~30 purchases per picker before latency becomes annoying; pagination is deferred until a real user hits the limit.
 
 ## Testing Strategy
 

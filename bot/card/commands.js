@@ -1,5 +1,6 @@
 const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
-const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles, computeCardDue } = require('./balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeCardDue } = require('./balance');
+const { listUnpaidPurchases } = require('./purchases');
 const { findCategory } = require('../categories');
 const { escapeMd } = require('../markdown');
 
@@ -152,7 +153,7 @@ function toIsoDate(d) {
   return d.toISOString().split('T')[0];
 }
 
-function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = () => new Date() }) {
+function createCardCommands({ bot, cardSheets, purchaseFlow, purchasePicker, now = () => new Date() }) {
   async function handleAdd(chatId, argsText) {
     const parsed = parseCardAdd(argsText);
     if (!parsed.valid) {
@@ -325,18 +326,20 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
     const tx_date = toIsoDate(now());
 
     if (subtype === 'payment') {
-      // Compute open cycles inline so paymentFlow stays pure (no sheet coupling).
-      // Missing CardStatements/CardTransactions tabs → [] → paymentFlow shows the
-      // "no open cycles" message.
-      const [statements, transactions] = await Promise.all([
-        cardSheets.listStatements(),
-        cardSheets.listTransactions(),
-      ]);
-      const cycles = computeOpenCycles(card.card_name, statements, transactions);
-      await paymentFlow.start(chatId, {
+      // Load transactions and hand the picker the unpaid purchases for this card.
+      // Missing CardTransactions → [] → picker shows the "no unpaid purchases" message.
+      let transactions = [];
+      try {
+        transactions = await cardSheets.listTransactions();
+      } catch (err) {
+        if (err.code !== 'MISSING_TAB') throw err;
+      }
+      const unpaid = listUnpaidPurchases(card.card_name, transactions);
+      await purchasePicker.start(chatId, {
         card_name: card.card_name,
-        cycles,
         amount,
+        purchases: unpaid,
+        statement_day: Number(card.statement_day),
         tx_date,
       });
       return;

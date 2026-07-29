@@ -9,7 +9,7 @@ const { createReceiptFlow } = require('./receipt-flow');
 const { createCardSheets } = require('./card/sheets');
 const { createCardCommands } = require('./card/commands');
 const { createPurchaseFlow } = require('./card/purchase-flow');
-const { createPaymentFlow } = require('./card/payment-flow');
+const { createPurchasePicker } = require('./card/purchase-picker');
 const { createReminders } = require('./card/reminders');
 const cron = require('node-cron');
 
@@ -99,7 +99,7 @@ const purchaseFlow = isTest ? null : createPurchaseFlow({
   },
 });
 if (purchaseFlow) flowHandlers.push(purchaseFlow);
-const paymentFlow = isTest ? null : createPaymentFlow({
+const purchasePicker = isTest ? null : createPurchasePicker({
   bot,
   onConfirm: async (chatId, data) => {
     try {
@@ -110,18 +110,22 @@ const paymentFlow = isTest ? null : createPaymentFlow({
         type: 'payment',
         amount: data.amount,
         category: '',
-        notes: data.notes || '',
-        statement_cycle: data.statement_cycle,
+        notes: '',
+        statement_cycle: data.statement_cycle || '',
+        paid_purchases: data.paid_purchases || [],
       });
+      const cycleLabel = data.statement_cycle ? `cycle ${data.statement_cycle}` : 'multi-cycle (unlinked)';
+      const paidCount = Array.isArray(data.paid_purchases) ? data.paid_purchases.length : 0;
       await bot.sendMessage(
         chatId,
         `✅ *Payment logged*\n` +
-          `${data.card_name} • ₱${Number(data.amount).toLocaleString()} • cycle ${data.statement_cycle} • ${data.tx_date}`,
+          `${data.card_name} • ₱${Number(data.amount).toLocaleString()} • ${cycleLabel} • ${data.tx_date}\n` +
+          `Covers: ${paidCount} purchase(s)`,
         { parse_mode: 'Markdown' },
       );
     } catch (err) {
       if (err.code === 'MISSING_TAB') {
-        await bot.sendMessage(chatId, '⚠️ CardTransactions tab not found. Please create it with columns: timestamp, card_name, tx_date, type, amount, category, notes, statement_cycle.');
+        await bot.sendMessage(chatId, '⚠️ CardTransactions tab not found. Please create it with columns: timestamp, card_name, tx_date, type, amount, category, notes, statement_cycle, tx_id, paid_purchases.');
         return;
       }
       console.error('payment save error:', err.message);
@@ -129,8 +133,8 @@ const paymentFlow = isTest ? null : createPaymentFlow({
     }
   },
 });
-if (paymentFlow) flowHandlers.push(paymentFlow);
-const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow });
+if (purchasePicker) flowHandlers.push(purchasePicker);
+const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow, purchasePicker });
 
 // Daily 21:00 Asia/Manila reminder job. Disabled during tests so the process
 // exits cleanly without a dangling cron handle.

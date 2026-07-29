@@ -120,7 +120,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
 
 ## Phase D: Wire the Command
 
-- [ ] **Task E3** — `handleTx` routes to picker; `index.js` wires it; **delete `payment-flow.js` (CQ1)**; SPEC corrected to `card_ppay_`; **T1 e2e integration test**
+- [x] **Task E3** — `handleTx` routes to picker; `index.js` wires it; **delete `payment-flow.js` (CQ1)**; SPEC corrected to `card_ppay_`; **T1 e2e integration test**
   - Acceptance: `/card tx X payment 500` triggers purchase-picker; empty-unpaid path warns; happy path writes row with generated `p_`-prefixed `tx_id`, `paid_purchases` CSV, empty `statement_cycle` on multi-cycle; `grep -r paymentFlow bot/` returns zero hits; SPEC callback naming updated (`card_ppay_` in, `card_pay_` out); SPEC states T4 sum-equals-amount constraint; e2e test file exists and passes.
   - Verify: `cd bot && npm test`; full suite green.
   - Files: `bot/card/commands.js`, `bot/card/__tests__/commands.test.js`, `bot/card/__tests__/purchase-payment-e2e.test.js` (T1), `bot/index.js`, `SPEC.md`; **DELETE** `bot/card/payment-flow.js`, **DELETE** `bot/card/__tests__/payment-flow.test.js`.
