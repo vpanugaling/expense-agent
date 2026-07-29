@@ -1,6 +1,7 @@
 const {
   shouldRemind,
   computeCardReminders,
+  formatReminder,
   createReminders,
 } = require('../reminders');
 const { createMockBot } = require('../../test-utils/mock-bot');
@@ -136,6 +137,49 @@ describe('computeCardReminders (two-phase)', () => {
   });
 });
 
+describe('formatReminder', () => {
+  test('card T-0 renders "due today" with card name and date', () => {
+    const s = formatReminder({ type: 'card', card_name: 'BPI-Gold', due_date: '2026-03-15', when: 'T-0' });
+    expect(s).toContain('BPI-Gold');
+    expect(s).toContain('due today');
+    expect(s).toContain('2026-03-15');
+  });
+
+  test('card T-3 renders "due in 3 days"', () => {
+    const s = formatReminder({ type: 'card', card_name: 'BPI-Gold', due_date: '2026-03-18', when: 'T-3' });
+    expect(s).toContain('due in 3 days');
+  });
+
+  test('statement T-0 renders cycle, outstanding (localized), and date', () => {
+    const s = formatReminder({
+      type: 'statement',
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      due_date: '2026-03-15',
+      outstanding: 1234.5,
+      when: 'T-0',
+    });
+    expect(s).toContain('BPI-Gold');
+    expect(s).toContain('2026-02');
+    expect(s).toContain('due today');
+    expect(s).toContain('1,234.5');
+    expect(s).toContain('2026-03-15');
+  });
+
+  test('statement T-3 renders "due in 3 days"', () => {
+    const s = formatReminder({
+      type: 'statement',
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      due_date: '2026-03-18',
+      outstanding: 700,
+      when: 'T-3',
+    });
+    expect(s).toContain('due in 3 days');
+    expect(s).toContain('700');
+  });
+});
+
 describe('createReminders.run', () => {
   function makeSheets(overrides = {}) {
     return {
@@ -200,6 +244,48 @@ describe('createReminders.run', () => {
     const statementMsg = bot.sentMessages().find((s) => /cycle.*2026-02/i.test(s.text));
     expect(statementMsg).toBeDefined();
     expect(statementMsg.text).toContain('1,000');
+  });
+
+  test('empty allowedUserIds → no messages sent, no crash', async () => {
+    const bot = createMockBot();
+    const cardSheets = makeSheets({
+      cards: [{ card_name: 'BPI-Gold', due_day: 15, statement_day: 25 }],
+    });
+    const reminders = createReminders({
+      bot,
+      cardSheets,
+      allowedUserIds: [],
+      cron: { schedule: jest.fn() },
+      now: () => utc(2026, 3, 15),
+    });
+    await reminders.run();
+    expect(bot.sentMessages()).toEqual([]);
+  });
+
+  test('one user send failure does not block delivery to other users', async () => {
+    const bot = createMockBot();
+    // Replace sendMessage: throw for '111', succeed for '222'.
+    const delivered = [];
+    bot.sendMessage = jest.fn(async (uid, text, options) => {
+      if (uid === '111') throw new Error('user blocked');
+      delivered.push({ uid, text, options });
+    });
+    const cardSheets = makeSheets({
+      cards: [{ card_name: 'BPI-Gold', due_day: 15, statement_day: 25 }],
+    });
+    const reminders = createReminders({
+      bot,
+      cardSheets,
+      allowedUserIds: ['111', '222'],
+      cron: { schedule: jest.fn() },
+      now: () => utc(2026, 3, 15),
+    });
+    await reminders.run();
+    // Both users were attempted (per-user try/catch continued the loop)
+    expect(bot.sendMessage).toHaveBeenCalledTimes(2);
+    // Successful delivery reached '222' despite '111' throwing
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].uid).toBe('222');
   });
 
   test('missing CreditCards tab does not crash (treated as no cards)', async () => {

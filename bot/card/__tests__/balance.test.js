@@ -345,4 +345,17 @@ describe('computeCardDue', () => {
     const r = computeCardDue(card, statements, [], utc(2026, 3, 10));
     expect(r.source).toBe('projected');
   });
+
+  test('overdue open statement still surfaces as next due (past due_date)', () => {
+    // A statement whose due_date has already passed but is not fully paid
+    // must remain the actionable "next due" — silently skipping it would
+    // let overdue bills disappear from /card due.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-01', statement_amount: 1000, due_date: '2026-02-15' },
+    ];
+    const r = computeCardDue(card, statements, [], utc(2026, 3, 10));
+    expect(r.source).toBe('statement');
+    expect(r.due_date).toBe('2026-02-15');
+    expect(r.outstanding).toBe(1000);
+  });
 });

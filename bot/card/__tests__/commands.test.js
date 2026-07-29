@@ -776,6 +776,16 @@ describe('createCardCommands.dispatch', () => {
     expect(purchaseFlow.start).toHaveBeenCalledTimes(1);
   });
 
+  test('routes /card tx to handleTx (payment) — payment flow starts, purchase does not', async () => {
+    const { commands, purchaseFlow, paymentFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    const handled = await commands.dispatch(1, '/card tx BPI-Gold payment 400');
+    expect(handled).toBe(true);
+    expect(paymentFlow.start).toHaveBeenCalledTimes(1);
+    expect(purchaseFlow.start).not.toHaveBeenCalled();
+  });
+
   test('routes /card statement to handleStatement', async () => {
     const { doc, commands } = wire({
       CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
