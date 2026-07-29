@@ -112,7 +112,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
   - Files: `bot/two-phase-picker.js`, `bot/__tests__/two-phase-picker.test.js`, `bot/test-utils/mock-bot.js` (add `editMessageText`; `sendMessage` returns `{ message_id }`).
   - Deps: none new.
 
-- [ ] **Task E2b** — `purchase-picker.js` on the shared abstraction (CQ1: no legacy refactor)
+- [x] **Task E2b** — `purchase-picker.js` on the shared abstraction (CQ1: no legacy refactor)
   - Acceptance: in-place toggle via `editMessageText`; accurate running total; multi-cycle sets `statement_cycle=''` + surfaces warning; zero-selection Done warns; foreign-prefix returns false. **T4 enforcement:** Done blocks if `sum(selected) !== amountTyped` with warning; tests cover all 3 cases (equal proceeds; over/under blocked). `payment-flow.js` NOT touched here (deleted in E3 per CQ1).
   - Verify: `cd bot && npm test card/__tests__/purchase-picker.test.js`.
   - Files: `bot/card/purchase-picker.js`, `bot/card/__tests__/purchase-picker.test.js`.
