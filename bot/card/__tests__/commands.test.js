@@ -676,6 +676,82 @@ describe('createCardCommands.handleStatement', () => {
   });
 });
 
+describe('createCardCommands.handleDue', () => {
+  const cardA = { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' };
+  const cardB = { card_name: 'Metrobank', last4: '5678', credit_limit: '50000', statement_day: '10', due_day: '5' };
+
+  test('missing CreditCards tab → setup message', async () => {
+    const { bot, commands } = wire({});
+    await commands.handleDue(1);
+    expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+
+  test('no cards registered → empty message', async () => {
+    const { bot, commands } = wire({ CreditCards: [] });
+    await commands.handleDue(1);
+    expect(bot.lastSent().text).toMatch(/no cards/i);
+  });
+
+  test('projected due for card with no statements (uses card.due_day)', async () => {
+    const { bot, commands } = wire({ CreditCards: [cardA] }, { now: () => new Date('2026-03-10T00:00:00Z') });
+    await commands.handleDue(1);
+    const text = bot.lastSent().text;
+    expect(text).toContain('BPI-Gold');
+    expect(text).toContain('2026-03-15');
+  });
+
+  test('statement-backed due when an open cycle exists', async () => {
+    const { bot, commands } = wire(
+      {
+        CreditCards: [cardA],
+        CardStatements: [{ card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '1000', due_date: '2026-03-20', closed_at: '' }],
+      },
+      { now: () => new Date('2026-03-10T00:00:00Z') },
+    );
+    await commands.handleDue(1);
+    const text = bot.lastSent().text;
+    expect(text).toContain('BPI-Gold');
+    expect(text).toContain('2026-03-20');
+    expect(text).toContain('1,000');
+  });
+
+  test('sorts multiple cards soonest-first', async () => {
+    const { bot, commands } = wire(
+      {
+        CreditCards: [cardA, cardB],
+        CardStatements: [
+          { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '1000', due_date: '2026-03-20', closed_at: '' },
+          { card_name: 'Metrobank', cycle_month: '2026-02', statement_amount: '500', due_date: '2026-03-05', closed_at: '' },
+        ],
+      },
+      { now: () => new Date('2026-03-01T00:00:00Z') },
+    );
+    await commands.handleDue(1);
+    const text = bot.lastSent().text;
+    const idxMetro = text.indexOf('Metrobank');
+    const idxBpi = text.indexOf('BPI-Gold');
+    expect(idxMetro).toBeGreaterThan(-1);
+    expect(idxBpi).toBeGreaterThan(-1);
+    expect(idxMetro).toBeLessThan(idxBpi);
+  });
+
+  test('fully-paid cycles do not skew sort — projected fallback applies', async () => {
+    const { bot, commands } = wire(
+      {
+        CreditCards: [cardA],
+        CardStatements: [{ card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '1000', due_date: '2026-03-20', closed_at: '' }],
+        CardTransactions: [{ card_name: 'BPI-Gold', type: 'payment', amount: '1000', statement_cycle: '2026-02' }],
+      },
+      { now: () => new Date('2026-03-01T00:00:00Z') },
+    );
+    await commands.handleDue(1);
+    const text = bot.lastSent().text;
+    // Projected: next due is 2026-03-15 (due_day=15, today=03-01)
+    expect(text).toContain('2026-03-15');
+    expect(text).not.toContain('2026-03-20');
+  });
+});
+
 describe('createCardCommands.dispatch', () => {
   test('routes /card add to handleAdd', async () => {
     const { doc, commands } = wire();
@@ -708,6 +784,15 @@ describe('createCardCommands.dispatch', () => {
     const handled = await commands.dispatch(1, '/card statement BPI-Gold 5000');
     expect(handled).toBe(true);
     expect(doc.sheetsByTitle.CardStatements._snapshot()).toHaveLength(1);
+  });
+
+  test('routes /card due to handleDue', async () => {
+    const { bot, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    const handled = await commands.dispatch(1, '/card due');
+    expect(handled).toBe(true);
+    expect(bot.lastSent().text).toContain('BPI-Gold');
   });
 
   test('routes /card rename to handleRename', async () => {

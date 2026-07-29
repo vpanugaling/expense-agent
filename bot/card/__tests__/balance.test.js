@@ -1,4 +1,4 @@
-const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles } = require('../balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles, computeCardDue } = require('../balance');
 
 // All dates are treated as UTC calendar dates (no time component).
 // See balance.js — using getUTC*/Date.UTC avoids TZ drift under jest.
@@ -274,5 +274,75 @@ describe('computeOpenCycles', () => {
     const open = computeOpenCycles('BPI-Gold', statements, transactions);
     expect(open[0].paid).toBeCloseTo(250.5);
     expect(open[0].outstanding).toBeCloseTo(749.5);
+  });
+});
+
+describe('computeCardDue', () => {
+  const card = { card_name: 'BPI-Gold', due_day: 15, statement_day: 25 };
+
+  test('with no statements → projected next due from card.due_day', () => {
+    const r = computeCardDue(card, [], [], utc(2026, 3, 10));
+    expect(r).toEqual({
+      card_name: 'BPI-Gold',
+      due_date: '2026-03-15',
+      cycle_month: null,
+      outstanding: null,
+      source: 'projected',
+    });
+  });
+
+  test('with one open statement → uses statement due_date', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+    ];
+    const r = computeCardDue(card, statements, [], utc(2026, 3, 1));
+    expect(r).toMatchObject({
+      due_date: '2026-03-15',
+      cycle_month: '2026-02',
+      outstanding: 1000,
+      source: 'statement',
+    });
+  });
+
+  test('with multiple open statements → picks oldest (most overdue) cycle', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-01', statement_amount: 500, due_date: '2026-02-15' },
+    ];
+    const r = computeCardDue(card, statements, [], utc(2026, 3, 1));
+    expect(r.cycle_month).toBe('2026-01');
+    expect(r.due_date).toBe('2026-02-15');
+  });
+
+  test('fully-paid statement falls back to projected', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 1000, statement_cycle: '2026-02' },
+    ];
+    const r = computeCardDue(card, statements, transactions, utc(2026, 3, 20));
+    expect(r.source).toBe('projected');
+    expect(r.due_date).toBe('2026-04-15');
+  });
+
+  test('partial payment on statement → outstanding reflects remainder', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '2026-02' },
+    ];
+    const r = computeCardDue(card, statements, transactions, utc(2026, 3, 1));
+    expect(r.outstanding).toBe(700);
+    expect(r.source).toBe('statement');
+  });
+
+  test('ignores statements for other cards', () => {
+    const statements = [
+      { card_name: 'Metrobank', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+    ];
+    const r = computeCardDue(card, statements, [], utc(2026, 3, 10));
+    expect(r.source).toBe('projected');
   });
 });

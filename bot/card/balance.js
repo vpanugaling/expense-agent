@@ -95,4 +95,29 @@ function computeOpenCycles(cardName, statements, transactions) {
   return open;
 }
 
-module.exports = { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles };
+// SPEC: /card due uses the statement's actual due_date when a cycle is still
+// open (so you're reminded of the real bill you owe). If no cycle is open
+// — either no statement has been closed yet, or every closed statement is
+// fully paid — we fall back to the projected due from the card's due_day.
+function computeCardDue(card, statements, transactions, today = new Date()) {
+  const open = computeOpenCycles(card.card_name, statements, transactions);
+  if (open.length > 0) {
+    const soonest = open[0];
+    return {
+      card_name: card.card_name,
+      due_date: soonest.due_date,
+      cycle_month: soonest.cycle_month,
+      outstanding: soonest.outstanding,
+      source: 'statement',
+    };
+  }
+  return {
+    card_name: card.card_name,
+    due_date: nextDueDate(card.due_day, today),
+    cycle_month: null,
+    outstanding: null,
+    source: 'projected',
+  };
+}
+
+module.exports = { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles, computeCardDue };

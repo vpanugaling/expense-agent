@@ -68,10 +68,11 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
 
 ## Phase 4: Due Visibility + Reminders
 
-- [ ] **Task 5** — `/card due`
+- [x] **Task 5** — `/card due`
   - Acceptance: lists each card with next due, sorted soonest-first; uses statement due when available.
   - Verify: `cd bot && npm test`; manual with mixed cards.
-  - Files: `bot/card/commands.js`, `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`.
+  - Files: `bot/card/commands.js`, `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`, `bot/card/__tests__/commands.test.js`.
+  - Status: 270/270 tests pass (+13 for Task 5: 6 `computeCardDue` tests, 6 `handleDue` tests, 1 dispatch route test). Manual Telegram verification pending.
 
 - [ ] **Task 6** — `node-cron` reminder job (two-phase, explicit TZ)
   - Acceptance: fires daily 9pm PHT via explicit `{ timezone }`; two-phase (cards first, statements only if match); T-3 and T-0 messages to every `ALLOWED_USER_IDS`; skipped when `NODE_ENV=test`.

@@ -1,5 +1,5 @@
 const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
-const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles } = require('./balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles, computeCardDue } = require('./balance');
 const { findCategory } = require('../categories');
 
 const LAST4_REGEX = /^\d{4}$/;
@@ -225,6 +225,38 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
     return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
   }
 
+  async function handleDue(chatId) {
+    let cards;
+    try {
+      cards = await cardSheets.listCards();
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return bot.sendMessage(chatId, missingTabMessage('CreditCards'));
+      throw err;
+    }
+    if (cards.length === 0) {
+      return bot.sendMessage(chatId, '💳 You have no cards yet. Add one with /card add.');
+    }
+
+    const [statements, transactions] = await Promise.all([
+      cardSheets.listStatements(),
+      cardSheets.listTransactions(),
+    ]);
+    const today = now();
+    const rows = cards
+      .map((c) => computeCardDue(c, statements, transactions, today))
+      .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+
+    const lines = ['📅 *Upcoming due dates*', ''];
+    for (const r of rows) {
+      const tail =
+        r.source === 'statement'
+          ? `₱${formatPeso(r.outstanding)} due (cycle ${r.cycle_month})`
+          : '_projected — no open statement_';
+      lines.push(`*${r.card_name}* — ${r.due_date}\n  ${tail}`);
+    }
+    return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+  }
+
   async function handleStatement(chatId, argsText) {
     const parsed = parseCardStatement(argsText);
     if (!parsed.valid) return bot.sendMessage(chatId, `⚠️ ${parsed.error}`);
@@ -411,6 +443,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
           'Usage:\n' +
           '/card add <nickname> <last4> <credit_limit> <statement_day> <due_day>\n' +
           '/card list — show all registered cards\n' +
+          '/card due — show upcoming due dates\n' +
           '/card rename <old-nickname> <new-nickname>\n' +
           '/card tx <nickname> purchase <amount> <category> [note]\n' +
           '/card tx <nickname> payment <amount> [note]\n' +
@@ -444,15 +477,19 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
       await handleStatement(chatId, subArgs);
       return true;
     }
+    if (sub === 'due') {
+      await handleDue(chatId);
+      return true;
+    }
 
     await bot.sendMessage(
       chatId,
-      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename, /card tx, /card statement`,
+      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card due, /card rename, /card tx, /card statement`,
     );
     return true;
   }
 
-  return { handleAdd, handleList, handleRename, handleTx, handleStatement, dispatch };
+  return { handleAdd, handleList, handleRename, handleTx, handleStatement, handleDue, dispatch };
 }
 
 module.exports = { parseCardAdd, parseCardRename, parseCardTx, parseCardStatement, createCardCommands };
