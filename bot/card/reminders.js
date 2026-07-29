@@ -1,4 +1,5 @@
 const { nextDueDate, computeOpenCycles } = require('./balance');
+const { buildPurchaseIndex } = require('./purchases');
 const { escapeMd } = require('../markdown');
 
 const MS_PER_DAY = 86400000;
@@ -19,10 +20,16 @@ function shouldRemind(today, dueDate) {
 }
 
 // Two-phase: Phase 1 walks cards for projected-due reminders (based on
-// card.due_day). Phase 2 walks statements for detailed reminders on any
-// still-open statement whose actual due_date matches T-3/T-0. A card with an
-// open statement matching both phases will emit both — the card-level nudge is
-// generic ("your card is due"), the statement-level one carries outstanding.
+// card.due_day). Phase 2 groups statements by card and calls computeOpenCycles
+// ONCE per card with ALL that card's statements — this preserves overpayment
+// carryforward across cycles (P2 fix). The previous per-statement call passed
+// [singleStatement] to computeOpenCycles, which meant credit from an overpaid
+// earlier cycle could not flow to a later open cycle, producing a spurious
+// "cycle B is still open" reminder even after the balance was fully cleared.
+//
+// A card with an open statement matching both phases will emit both — the
+// card-level nudge is generic ("your card is due"), the statement-level one
+// carries outstanding.
 function computeCardReminders(cards, statements, transactions, today = new Date()) {
   const out = [];
 
@@ -34,19 +41,39 @@ function computeCardReminders(cards, statements, transactions, today = new Date(
     }
   }
 
+  const cardsByName = new Map();
+  for (const c of cards) cardsByName.set(String(c.card_name).toLowerCase(), c);
+
+  const statementsByCard = new Map();
   for (const s of statements) {
-    const open = computeOpenCycles(s.card_name, [s], transactions);
-    if (open.length === 0) continue;
-    const when = shouldRemind(today, s.due_date);
-    if (!when) continue;
-    out.push({
-      type: 'statement',
-      card_name: s.card_name,
-      cycle_month: s.cycle_month,
-      due_date: s.due_date,
-      outstanding: open[0].outstanding,
-      when,
-    });
+    const key = String(s.card_name).toLowerCase();
+    if (!statementsByCard.has(key)) statementsByCard.set(key, []);
+    statementsByCard.get(key).push(s);
+  }
+
+  const purchaseIndex = buildPurchaseIndex(transactions);
+
+  for (const [key, stmts] of statementsByCard) {
+    const card = cardsByName.get(key);
+    // Orphan statement (no matching card row) — skip; reminders need the card
+    // context for cycle derivation and would otherwise crash on null.card.
+    if (!card) continue;
+    const open = computeOpenCycles(card, stmts, transactions, purchaseIndex);
+    const openByMonth = new Map(open.map((o) => [o.cycle_month, o]));
+    for (const s of stmts) {
+      const openCycle = openByMonth.get(s.cycle_month);
+      if (!openCycle) continue;
+      const when = shouldRemind(today, s.due_date);
+      if (!when) continue;
+      out.push({
+        type: 'statement',
+        card_name: s.card_name,
+        cycle_month: s.cycle_month,
+        due_date: s.due_date,
+        outstanding: openCycle.outstanding,
+        when,
+      });
+    }
   }
 
   return out;

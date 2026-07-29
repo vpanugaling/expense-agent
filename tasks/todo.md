@@ -134,7 +134,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
 
 ## Phase E: Regression
 
-- [ ] **Task E4** — `balance.js` derives statement_cycle on read (1A) + CQ3 sig + CQ4 hydration + P1 index reuse; P2 reminders fix; regression tests
+- [x] **Task E4** — `balance.js` derives statement_cycle on read (1A) + CQ3 sig + CQ4 hydration + P1 index reuse; P2 reminders fix; regression tests
   - Acceptance: `resolvePaymentCycle(payment, card, purchaseIndex)` resolves stored cycle when present else `hydratePurchases` + `inferCycleFromPurchases`; `computeOpenCycles(card, statements, transactions, purchaseIndex?)` + `computeCardDue(card, statements, transactions, today, purchaseIndex?)` drop `cardName` (CQ3) and accept optional pre-built index (P1); `buildPurchaseIndex(transactions)` helper exposed; purchase-tagged single-cycle credits derived cycle like legacy; multi-cycle contributes zero to cycles but full amount to `computeBalances`; overpayment carryforward preserved; legacy payments unaffected; unknown tx_ids silently skipped. **P2:** `computeCardReminders` groups statements by card, calls `computeOpenCycles` once per card (not per statement) — overpaid cycle A no longer emits spurious reminder for open cycle B.
   - Verify: `cd bot && npm test card/__tests__/balance.test.js card/__tests__/reminders.test.js`; full suite green after call-site updates.
   - Files: `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`, `bot/card/commands.js`, `bot/card/reminders.js`, `bot/card/__tests__/reminders.test.js`.

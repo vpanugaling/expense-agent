@@ -140,21 +140,21 @@ describe('computeDueDate', () => {
 
 describe('computeOpenCycles', () => {
   test('returns [] when card has no statements', () => {
-    expect(computeOpenCycles('BPI-Gold', [], [])).toEqual([]);
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, [], [])).toEqual([]);
   });
 
   test('returns [] when only other cards have statements', () => {
     const statements = [
       { card_name: 'Metrobank', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, [])).toEqual([]);
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, [])).toEqual([]);
   });
 
   test('includes cycles with zero payments', () => {
     const statements = [
       { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, [])).toEqual([
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, [])).toEqual([
       { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 0, outstanding: 1000 },
     ]);
   });
@@ -166,7 +166,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions)).toEqual([
       { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 300, outstanding: 700 },
     ]);
   });
@@ -178,7 +178,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 1000, statement_cycle: '2026-03' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([]);
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions)).toEqual([]);
   });
 
   test('excludes overpaid cycles', () => {
@@ -188,7 +188,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 1500, statement_cycle: '2026-03' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([]);
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions)).toEqual([]);
   });
 
   test('carries overpayment credit forward to the next open cycle', () => {
@@ -202,7 +202,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 1500, statement_cycle: '2026-03' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions)).toEqual([
       { cycle_month: '2026-04', due_date: '2026-05-15', statement_amount: 800, paid: 0, outstanding: 300 },
     ]);
   });
@@ -218,7 +218,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 400, statement_cycle: '2026-03' },
     ];
-    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+    expect(computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions)).toEqual([
       { cycle_month: '2026-05', due_date: '2026-06-15', statement_amount: 300, paid: 0, outstanding: 200 },
     ]);
   });
@@ -231,7 +231,7 @@ describe('computeOpenCycles', () => {
       { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
       { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '2026-03' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions);
     expect(open).toEqual([
       { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 500, outstanding: 500 },
     ]);
@@ -243,7 +243,7 @@ describe('computeOpenCycles', () => {
       { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 500, due_date: '2026-04-15' },
       { card_name: 'BPI-Gold', cycle_month: '2026-04', statement_amount: 700, due_date: '2026-05-15' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, []);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, []);
     expect(open.map((c) => c.cycle_month)).toEqual(['2026-03', '2026-04', '2026-05']);
   });
 
@@ -254,7 +254,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'bpi-gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
     ];
-    const open = computeOpenCycles('bpi-GOLD', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'bpi-GOLD', statement_day: 25 }, statements, transactions);
     expect(open).toEqual([
       { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 300, outstanding: 700 },
     ]);
@@ -268,7 +268,7 @@ describe('computeOpenCycles', () => {
       { card_name: 'BPI-Gold', type: 'purchase', amount: 500, statement_cycle: '' },
       { card_name: 'BPI-Gold', type: 'purchase', amount: 500, statement_cycle: '2026-03' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions);
     expect(open).toEqual([
       { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 0, outstanding: 1000 },
     ]);
@@ -281,7 +281,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'Metrobank', type: 'payment', amount: 500, statement_cycle: '2026-03' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions);
     expect(open[0].paid).toBe(0);
   });
 
@@ -292,7 +292,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: 500, statement_cycle: '' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions);
     expect(open[0].paid).toBe(0);
   });
 
@@ -303,7 +303,7 @@ describe('computeOpenCycles', () => {
     const transactions = [
       { card_name: 'BPI-Gold', type: 'payment', amount: '250.50', statement_cycle: '2026-03' },
     ];
-    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    const open = computeOpenCycles({ card_name: 'BPI-Gold', statement_day: 25 }, statements, transactions);
     expect(open[0].paid).toBeCloseTo(250.5);
     expect(open[0].outstanding).toBeCloseTo(749.5);
   });
@@ -389,5 +389,99 @@ describe('computeCardDue', () => {
     expect(r.source).toBe('statement');
     expect(r.due_date).toBe('2026-02-15');
     expect(r.outstanding).toBe(1000);
+  });
+});
+
+describe('computeOpenCycles — purchase-tagged payment regression', () => {
+  const card = { card_name: 'BPI-Gold', statement_day: 25 };
+
+  test('single-cycle purchase-tagged payment (empty stored cycle) credits the derived cycle', () => {
+    // Purchase in 2026-07 (day 26 >= statement_day 25 → cycle 2026-07).
+    // Payment stores paid_purchases=[p_b] with statement_cycle=''.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-26', amount: 200, tx_id: 'p_b' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '', paid_purchases: ['p_b'] },
+    ];
+    const open = computeOpenCycles(card, statements, transactions);
+    expect(open).toEqual([]);
+  });
+
+  test('multi-cycle purchase-tagged payment stays unlinked — cycles remain fully open', () => {
+    // p_a → cycle 2026-06, p_b → cycle 2026-07. Payment tags both → resolves
+    // to '' (multi), so neither cycle receives credit here.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-06', statement_amount: 100, due_date: '2026-07-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-10', amount: 100, tx_id: 'p_a' },
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-26', amount: 200, tx_id: 'p_b' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '', paid_purchases: ['p_a', 'p_b'] },
+    ];
+    const open = computeOpenCycles(card, statements, transactions);
+    expect(open.map((o) => o.cycle_month)).toEqual(['2026-06', '2026-07']);
+    expect(open[0].paid).toBe(0);
+    expect(open[1].paid).toBe(0);
+  });
+
+  test('stored statement_cycle wins over derived (legacy behavior preserved)', () => {
+    // Payment has BOTH statement_cycle='2026-03' AND paid_purchases=[p_b in cycle 2026-07].
+    // Stored cycle wins → credits 2026-03, not 2026-07.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 200, due_date: '2026-04-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-26', amount: 200, tx_id: 'p_b' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '2026-03', paid_purchases: ['p_b'] },
+    ];
+    const open = computeOpenCycles(card, statements, transactions);
+    expect(open.map((o) => o.cycle_month)).toEqual(['2026-07']);
+    expect(open[0].outstanding).toBe(200);
+  });
+
+  test('purchase-tagged payment participates in overpayment carryforward', () => {
+    // Overpayment on cycle 2026-06 (derived from p_a) carries to cycle 2026-07.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-06', statement_amount: 100, due_date: '2026-07-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-10', amount: 100, tx_id: 'p_a' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 250, statement_cycle: '', paid_purchases: ['p_a'] },
+    ];
+    const open = computeOpenCycles(card, statements, transactions);
+    expect(open).toEqual([
+      { cycle_month: '2026-07', due_date: '2026-08-15', statement_amount: 200, paid: 0, outstanding: 50 },
+    ]);
+  });
+
+  test('accepts a pre-built purchaseIndex without rebuilding (P1)', () => {
+    const { buildPurchaseIndex } = require('../purchases');
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-07-26', amount: 200, tx_id: 'p_b' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '', paid_purchases: ['p_b'] },
+    ];
+    const idx = buildPurchaseIndex(transactions);
+    const open = computeOpenCycles(card, statements, transactions, idx);
+    expect(open).toEqual([]);
+  });
+
+  test('unknown tx_ids in paid_purchases are silently skipped (no crash)', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-07', statement_amount: 200, due_date: '2026-08-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '', paid_purchases: ['ghost'] },
+    ];
+    const open = computeOpenCycles(card, statements, transactions);
+    // Ghost tag resolves to empty → payment ignored → cycle stays open.
+    expect(open[0].outstanding).toBe(200);
   });
 });

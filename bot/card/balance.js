@@ -1,3 +1,7 @@
+// Lazy-required inside computeOpenCycles to break a circular dependency:
+// purchases.js needs deriveCycleMonth from this file. Both modules are pure,
+// so lazy access at call-time is safe.
+
 function daysInMonth(year, monthZeroIdx) {
   return new Date(Date.UTC(year, monthZeroIdx + 1, 0)).getUTCDate();
 }
@@ -67,21 +71,34 @@ function computeBalances(transactions) {
 // overdue cycle first. Payments with empty statement_cycle are unlinked and
 // ignored here — they are not applied to any cycle.
 //
+// Purchase-tagged payments (empty statement_cycle + non-empty paid_purchases)
+// derive their cycle from the tagged purchases via resolvePaymentCycle — a
+// single-cycle tag credits that cycle; a multi-cycle tag stays unlinked
+// (contributes zero here but still counts in computeBalances).
+//
 // Overpayment on an older cycle carries credit forward to later open cycles,
 // consistent with computeBalances (which preserves negative balances) and with
 // how real credit cards apply excess payment. Without this, a user who
 // overpays cycle A would still see cycle B's full outstanding in the picker
 // even though their card balance already reflects the credit.
-function computeOpenCycles(cardName, statements, transactions) {
-  const target = String(cardName).toLowerCase();
+//
+// `card` is the full card object (needs statement_day for cycle derivation).
+// `purchaseIndex` is optional — if omitted, we build one; callers that scan
+// many cards should build it once and pass it in (P1).
+function computeOpenCycles(card, statements, transactions, purchaseIndex) {
+  const { buildPurchaseIndex, resolvePaymentCycle } = require('./purchases');
+  const target = String(card.card_name).toLowerCase();
+  const statementDay = Number(card.statement_day);
+  const idx = purchaseIndex || buildPurchaseIndex(transactions);
   const paidMap = {};
   for (const tx of transactions) {
     if (tx.type !== 'payment') continue;
     if (String(tx.card_name).toLowerCase() !== target) continue;
-    if (!tx.statement_cycle) continue;
+    const cycle = resolvePaymentCycle(tx, statementDay, idx);
+    if (!cycle) continue;
     const amount = Number(tx.amount);
     if (!Number.isFinite(amount)) continue;
-    paidMap[tx.statement_cycle] = (paidMap[tx.statement_cycle] || 0) + amount;
+    paidMap[cycle] = (paidMap[cycle] || 0) + amount;
   }
 
   // Sort cycles oldest-first so carryforward flows in the right direction.
@@ -123,8 +140,8 @@ function computeOpenCycles(cardName, statements, transactions) {
 // open (so you're reminded of the real bill you owe). If no cycle is open
 // — either no statement has been closed yet, or every closed statement is
 // fully paid — we fall back to the projected due from the card's due_day.
-function computeCardDue(card, statements, transactions, today = new Date()) {
-  const open = computeOpenCycles(card.card_name, statements, transactions);
+function computeCardDue(card, statements, transactions, today = new Date(), purchaseIndex) {
+  const open = computeOpenCycles(card, statements, transactions, purchaseIndex);
   if (open.length > 0) {
     const soonest = open[0];
     return {

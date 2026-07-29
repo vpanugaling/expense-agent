@@ -37,18 +37,47 @@ function resolveTxId(row) {
 // a payment row referencing an id that no longer exists is treated as if the
 // tag were absent rather than raising.
 function hydratePurchases(txIds, transactions) {
+  const index = buildPurchaseIndex(transactions);
+  return hydratePurchasesFromIndex(txIds, index);
+}
+
+// buildPurchaseIndex returns Map<tx_id, purchase>. Extracted so callers that
+// scan payments across many statements (computeCardReminders, /card due) can
+// build the index once per run instead of once per statement (P1). First
+// occurrence of a duplicate id wins — matches hydratePurchases's behavior.
+function buildPurchaseIndex(transactions) {
   const index = new Map();
   for (const tx of transactions) {
     if (tx.type !== 'purchase') continue;
     const id = resolveTxId(tx);
     if (!index.has(id)) index.set(id, { ...tx, tx_id: id });
   }
+  return index;
+}
+
+function hydratePurchasesFromIndex(txIds, index) {
   const out = [];
   for (const id of txIds) {
     const p = index.get(id);
     if (p) out.push(p);
   }
   return out;
+}
+
+// resolvePaymentCycle returns the effective statement_cycle for a payment.
+// Stored `statement_cycle` wins when non-empty (legacy cycle-only payments +
+// any explicit override). Otherwise, `paid_purchases` are hydrated and their
+// cycle inferred: single → that cycle; multi/empty/unknown → '' (unlinked).
+// Multi-cycle purchase-tagged payments intentionally return '' so they don't
+// spuriously credit any one cycle in computeOpenCycles — their full amount
+// still counts toward computeBalances (which sums by type, not cycle).
+function resolvePaymentCycle(payment, statementDay, purchaseIndex) {
+  if (payment.statement_cycle) return payment.statement_cycle;
+  const tagged = Array.isArray(payment.paid_purchases) ? payment.paid_purchases : [];
+  if (tagged.length === 0) return '';
+  const purchases = hydratePurchasesFromIndex(tagged, purchaseIndex);
+  const info = inferCycleFromPurchases(purchases, statementDay);
+  return info.cycle_month || '';
 }
 
 // listUnpaidPurchases returns purchase rows for `cardName` (case-insensitive)
@@ -104,6 +133,9 @@ function inferCycleFromPurchases(purchases, statementDay) {
 module.exports = {
   synthesizeTxId,
   hydratePurchases,
+  buildPurchaseIndex,
+  hydratePurchasesFromIndex,
+  resolvePaymentCycle,
   listUnpaidPurchases,
   inferCycleFromPurchases,
 };

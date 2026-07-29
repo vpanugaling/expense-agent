@@ -3,6 +3,8 @@ const {
   listUnpaidPurchases,
   inferCycleFromPurchases,
   hydratePurchases,
+  buildPurchaseIndex,
+  resolvePaymentCycle,
 } = require('../purchases');
 
 // Deterministic timestamps for stable ids.
@@ -223,5 +225,80 @@ describe('inferCycleFromPurchases', () => {
     const purchases = [purchase('2026-07-15')];
     const out = inferCycleFromPurchases(purchases, 10);
     expect(out).toEqual({ cycle_month: '2026-07' });
+  });
+});
+
+describe('buildPurchaseIndex', () => {
+  it('indexes only purchases, keyed by resolved tx_id', () => {
+    const txs = [
+      { timestamp: T1, card_name: 'BPI', type: 'purchase', amount: 100, tx_id: 'p_a' },
+      { timestamp: T2, card_name: 'BPI', type: 'purchase', amount: 200, tx_id: 'p_b' },
+      { timestamp: T3, card_name: 'BPI', type: 'payment', amount: 50, tx_id: 'p_pay' },
+    ];
+    const idx = buildPurchaseIndex(txs);
+    expect(idx.size).toBe(2);
+    expect(idx.get('p_a').amount).toBe(100);
+    expect(idx.get('p_b').amount).toBe(200);
+    expect(idx.has('p_pay')).toBe(false);
+  });
+
+  it('synthesizes ids for legacy purchase rows', () => {
+    const txs = [{ timestamp: T4, card_name: 'BPI', type: 'purchase', amount: 300 }];
+    const idx = buildPurchaseIndex(txs);
+    const legacyId = `ps_${Date.parse(T4)}`;
+    expect(idx.get(legacyId).amount).toBe(300);
+  });
+
+  it('first occurrence of a duplicate id wins (matches hydratePurchases)', () => {
+    const txs = [
+      { timestamp: T1, card_name: 'BPI', type: 'purchase', amount: 100, tx_id: 'p_a' },
+      { timestamp: T2, card_name: 'BPI', type: 'purchase', amount: 999, tx_id: 'p_a' },
+    ];
+    const idx = buildPurchaseIndex(txs);
+    expect(idx.get('p_a').amount).toBe(100);
+  });
+});
+
+describe('resolvePaymentCycle', () => {
+  const purchases = [
+    { tx_date: '2026-07-10', card_name: 'BPI', type: 'purchase', amount: 100, tx_id: 'p_a' }, // cycle 2026-06 (day 10 < 25)
+    { tx_date: '2026-07-26', card_name: 'BPI', type: 'purchase', amount: 200, tx_id: 'p_b' }, // cycle 2026-07
+    { tx_date: '2026-07-28', card_name: 'BPI', type: 'purchase', amount: 300, tx_id: 'p_c' }, // cycle 2026-07
+  ];
+  const idx = buildPurchaseIndex(purchases);
+
+  it('returns stored statement_cycle when non-empty (legacy cycle-only payments)', () => {
+    const payment = { statement_cycle: '2026-05', paid_purchases: [] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('2026-05');
+  });
+
+  it('stored statement_cycle overrides purchase-derived cycle when both present', () => {
+    const payment = { statement_cycle: '2026-03', paid_purchases: ['p_b', 'p_c'] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('2026-03');
+  });
+
+  it('derives single cycle from tagged purchases when statement_cycle empty', () => {
+    const payment = { statement_cycle: '', paid_purchases: ['p_b', 'p_c'] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('2026-07');
+  });
+
+  it('returns empty for multi-cycle purchase-tagged payments', () => {
+    const payment = { statement_cycle: '', paid_purchases: ['p_a', 'p_b'] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('');
+  });
+
+  it('returns empty when no cycle info at all', () => {
+    const payment = { statement_cycle: '', paid_purchases: [] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('');
+  });
+
+  it('silently skips unknown tx_ids in paid_purchases', () => {
+    const payment = { statement_cycle: '', paid_purchases: ['p_b', 'unknown', 'p_c'] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('2026-07');
+  });
+
+  it('all-unknown tx_ids collapse to empty (hydration returns nothing)', () => {
+    const payment = { statement_cycle: '', paid_purchases: ['ghost1', 'ghost2'] };
+    expect(resolvePaymentCycle(payment, 25, idx)).toBe('');
   });
 });

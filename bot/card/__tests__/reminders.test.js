@@ -135,6 +135,45 @@ describe('computeCardReminders (two-phase)', () => {
       { type: 'card', card_name: 'Metrobank', due_date: '2026-03-05', when: 'T-0' },
     ]);
   });
+
+  test('P2: overpayment on cycle A carries forward and suppresses reminder for cycle B', () => {
+    // Cycle 2026-02: $1000 statement, $1500 paid → $500 credit carries forward.
+    // Cycle 2026-03: $400 statement, no direct payment → the $500 credit
+    // covers it entirely. Previously (per-statement computeOpenCycles) cycle B
+    // would still emit a reminder because carryforward only worked when both
+    // statements were passed together.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-10' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 400, due_date: '2026-03-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 1500, statement_cycle: '2026-02' },
+    ];
+    const out = computeCardReminders([cardA], statements, transactions, utc(2026, 3, 15));
+    expect(out.filter((r) => r.type === 'statement')).toEqual([]);
+  });
+
+  test('orphan statement (no matching card) is silently skipped', () => {
+    const statements = [
+      { card_name: 'Ghost', cycle_month: '2026-02', statement_amount: 1000, due_date: '2026-03-15' },
+    ];
+    const out = computeCardReminders([cardA], statements, [], utc(2026, 3, 15));
+    expect(out.filter((r) => r.type === 'statement')).toEqual([]);
+  });
+
+  test('purchase-tagged payment settles cycle → no statement reminder emitted', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: 200, due_date: '2026-03-15' },
+    ];
+    const transactions = [
+      // Purchase in cycle 2026-02 (day 26 >= statement_day 25 wait cardA statement_day=25, so 2026-02-26 → cycle 2026-02).
+      { card_name: 'BPI-Gold', type: 'purchase', tx_date: '2026-02-26', amount: 200, tx_id: 'p_x' },
+      // Purchase-tagged payment with empty statement_cycle, tagging p_x.
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '', paid_purchases: ['p_x'] },
+    ];
+    const out = computeCardReminders([cardA], statements, transactions, utc(2026, 3, 15));
+    expect(out.filter((r) => r.type === 'statement')).toEqual([]);
+  });
 });
 
 describe('formatReminder', () => {
