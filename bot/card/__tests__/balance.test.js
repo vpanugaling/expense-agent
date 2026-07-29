@@ -1,4 +1,4 @@
-const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate } = require('../balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles } = require('../balance');
 
 // All dates are treated as UTC calendar dates (no time component).
 // See balance.js — using getUTC*/Date.UTC avoids TZ drift under jest.
@@ -135,5 +135,144 @@ describe('computeDueDate', () => {
 
   test('clamps due_day=31 in a 30-day month', () => {
     expect(computeDueDate(31, '2026-03')).toBe('2026-04-30');
+  });
+});
+
+describe('computeOpenCycles', () => {
+  test('returns [] when card has no statements', () => {
+    expect(computeOpenCycles('BPI-Gold', [], [])).toEqual([]);
+  });
+
+  test('returns [] when only other cards have statements', () => {
+    const statements = [
+      { card_name: 'Metrobank', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, [])).toEqual([]);
+  });
+
+  test('includes cycles with zero payments', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, [])).toEqual([
+      { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 0, outstanding: 1000 },
+    ]);
+  });
+
+  test('includes cycles with partial payment', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+      { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 300, outstanding: 700 },
+    ]);
+  });
+
+  test('excludes fully-paid cycles', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 1000, statement_cycle: '2026-03' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([]);
+  });
+
+  test('excludes overpaid cycles', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 1500, statement_cycle: '2026-03' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([]);
+  });
+
+  test('sums multiple payments against the same cycle', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '2026-03' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    expect(open).toEqual([
+      { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 500, outstanding: 500 },
+    ]);
+  });
+
+  test('sorts open cycles oldest-first', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-05', statement_amount: 1000, due_date: '2026-06-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 500, due_date: '2026-04-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-04', statement_amount: 700, due_date: '2026-05-15' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, []);
+    expect(open.map((c) => c.cycle_month)).toEqual(['2026-03', '2026-04', '2026-05']);
+  });
+
+  test('matches card name case-insensitively', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'bpi-gold', type: 'payment', amount: 300, statement_cycle: '2026-03' },
+    ];
+    const open = computeOpenCycles('bpi-GOLD', statements, transactions);
+    expect(open).toEqual([
+      { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 300, outstanding: 700 },
+    ]);
+  });
+
+  test('ignores non-payment transactions', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 500, statement_cycle: '' },
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 500, statement_cycle: '2026-03' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    expect(open).toEqual([
+      { cycle_month: '2026-03', due_date: '2026-04-15', statement_amount: 1000, paid: 0, outstanding: 1000 },
+    ]);
+  });
+
+  test('ignores payments for other cards', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'Metrobank', type: 'payment', amount: 500, statement_cycle: '2026-03' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    expect(open[0].paid).toBe(0);
+  });
+
+  test('ignores payments with unlinked/empty statement_cycle', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 500, statement_cycle: '' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    expect(open[0].paid).toBe(0);
+  });
+
+  test('coerces string amounts on both statements and payments', () => {
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: '1000', due_date: '2026-04-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: '250.50', statement_cycle: '2026-03' },
+    ];
+    const open = computeOpenCycles('BPI-Gold', statements, transactions);
+    expect(open[0].paid).toBeCloseTo(250.5);
+    expect(open[0].outstanding).toBeCloseTo(749.5);
   });
 });

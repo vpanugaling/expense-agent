@@ -9,6 +9,7 @@ const { createReceiptFlow } = require('./receipt-flow');
 const { createCardSheets } = require('./card/sheets');
 const { createCardCommands } = require('./card/commands');
 const { createPurchaseFlow } = require('./card/purchase-flow');
+const { createPaymentFlow } = require('./card/payment-flow');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -96,7 +97,38 @@ const purchaseFlow = isTest ? null : createPurchaseFlow({
   },
 });
 if (purchaseFlow) flowHandlers.push(purchaseFlow);
-const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow });
+const paymentFlow = isTest ? null : createPaymentFlow({
+  bot,
+  onConfirm: async (chatId, data) => {
+    try {
+      await cardSheets.addTransaction({
+        timestamp: new Date().toISOString(),
+        card_name: data.card_name,
+        tx_date: data.tx_date,
+        type: 'payment',
+        amount: data.amount,
+        category: '',
+        notes: data.notes || '',
+        statement_cycle: data.statement_cycle,
+      });
+      await bot.sendMessage(
+        chatId,
+        `✅ *Payment logged*\n` +
+          `${data.card_name} • ₱${Number(data.amount).toLocaleString()} • cycle ${data.statement_cycle} • ${data.tx_date}`,
+        { parse_mode: 'Markdown' },
+      );
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') {
+        await bot.sendMessage(chatId, '⚠️ CardTransactions tab not found. Please create it with columns: timestamp, card_name, tx_date, type, amount, category, notes, statement_cycle.');
+        return;
+      }
+      console.error('payment save error:', err.message);
+      await bot.sendMessage(chatId, `❌ Failed to save payment: ${err.message}`);
+    }
+  },
+});
+if (paymentFlow) flowHandlers.push(paymentFlow);
+const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow });
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {

@@ -1,5 +1,5 @@
 const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
-const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate } = require('./balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles } = require('./balance');
 const { findCategory } = require('../categories');
 
 const LAST4_REGEX = /^\d{4}$/;
@@ -40,22 +40,43 @@ function parseCardAdd(argsText) {
 }
 
 // /card tx <nickname> purchase <amount> <category> [note...]
-// (payment lands in Task 4 with a separate parser + cycle picker.)
+// /card tx <nickname> payment <amount> [note...]      (no category — payments
+// don't get bucketed the way purchases do; the cycle they clear is picked
+// interactively via inline buttons in handleTx.)
 function parseCardTx(argsText) {
   const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
-  if (parts.length < 4) {
+  if (parts.length < 3) {
     return {
       valid: false,
-      error: 'Usage: /card tx <nickname> purchase <amount> <category> [note]',
+      error: 'Usage: /card tx <nickname> purchase <amount> <category> [note]\n   or /card tx <nickname> payment <amount> [note]',
     };
   }
-  const [nickname, subtypeRaw, amountRaw, categoryRaw, ...rest] = parts;
+  const [nickname, subtypeRaw, amountRaw, ...rest] = parts;
   const subtype = subtypeRaw.toLowerCase();
-  if (subtype !== 'purchase') {
-    return { valid: false, error: `Unknown transaction type "${subtypeRaw}". Only "purchase" is supported here.` };
+  if (subtype !== 'purchase' && subtype !== 'payment') {
+    return { valid: false, error: `Unknown transaction type "${subtypeRaw}". Use "purchase" or "payment".` };
   }
   const amt = validateAmount(amountRaw);
   if (!amt.valid) return { valid: false, error: amt.error };
+
+  if (subtype === 'payment') {
+    return {
+      valid: true,
+      values: {
+        nickname,
+        subtype,
+        amount: amt.value,
+        category: null,
+        notes: rest.join(' '),
+      },
+    };
+  }
+
+  // Purchase requires a category as the 4th positional token.
+  if (rest.length < 1) {
+    return { valid: false, error: 'Usage: /card tx <nickname> purchase <amount> <category> [note]' };
+  }
+  const [categoryRaw, ...noteParts] = rest;
   const category = findCategory(categoryRaw);
   if (!category) {
     return { valid: false, error: `Unknown category "${categoryRaw}".` };
@@ -67,7 +88,7 @@ function parseCardTx(argsText) {
       subtype,
       amount: amt.value,
       category,
-      notes: rest.join(' '),
+      notes: noteParts.join(' '),
     },
   };
 }
@@ -130,7 +151,7 @@ function toIsoDate(d) {
   return d.toISOString().split('T')[0];
 }
 
-function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Date() }) {
+function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = () => new Date() }) {
   async function handleAdd(chatId, argsText) {
     const parsed = parseCardAdd(argsText);
     if (!parsed.valid) {
@@ -257,7 +278,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
   async function handleTx(chatId, argsText) {
     const parsed = parseCardTx(argsText);
     if (!parsed.valid) return bot.sendMessage(chatId, `⚠️ ${parsed.error}`);
-    const { nickname, amount, category, notes } = parsed.values;
+    const { nickname, subtype, amount, category, notes } = parsed.values;
 
     let card;
     try {
@@ -268,9 +289,29 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
     }
     if (!card) return bot.sendMessage(chatId, `⚠️ Card "${nickname}" not found.`);
 
+    const tx_date = toIsoDate(now());
+
+    if (subtype === 'payment') {
+      // Compute open cycles inline so paymentFlow stays pure (no sheet coupling).
+      // Missing CardStatements/CardTransactions tabs → [] → paymentFlow shows the
+      // "no open cycles" message.
+      const [statements, transactions] = await Promise.all([
+        cardSheets.listStatements(),
+        cardSheets.listTransactions(),
+      ]);
+      const cycles = computeOpenCycles(card.card_name, statements, transactions);
+      await paymentFlow.start(chatId, {
+        card_name: card.card_name,
+        cycles,
+        amount,
+        tx_date,
+      });
+      return;
+    }
+
     await purchaseFlow.start(chatId, {
       card_name: card.card_name,
-      tx_date: toIsoDate(now()),
+      tx_date,
       amount,
       category,
       notes,
@@ -372,6 +413,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
           '/card list — show all registered cards\n' +
           '/card rename <old-nickname> <new-nickname>\n' +
           '/card tx <nickname> purchase <amount> <category> [note]\n' +
+          '/card tx <nickname> payment <amount> [note]\n' +
           '/card statement <nickname> <amount> [due_date] [cycle_month]',
         { parse_mode: 'Markdown' },
       );

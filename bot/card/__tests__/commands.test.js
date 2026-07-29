@@ -3,13 +3,14 @@ const { createCardSheets } = require('../sheets');
 const { createFakeDoc } = require('../../test-utils/fake-sheet');
 const { createMockBot } = require('../../test-utils/mock-bot');
 
-function wire(tabs = { CreditCards: [] }, { now = () => new Date('2026-03-10T00:00:00Z'), purchaseFlow } = {}) {
+function wire(tabs = { CreditCards: [] }, { now = () => new Date('2026-03-10T00:00:00Z'), purchaseFlow, paymentFlow } = {}) {
   const bot = createMockBot();
   const doc = createFakeDoc(tabs);
   const cardSheets = createCardSheets({ getDoc: async () => doc });
-  const flow = purchaseFlow || { start: jest.fn(async () => {}) };
-  const commands = createCardCommands({ bot, cardSheets, purchaseFlow: flow, now });
-  return { bot, doc, cardSheets, purchaseFlow: flow, commands };
+  const pFlow = purchaseFlow || { start: jest.fn(async () => {}) };
+  const payFlow = paymentFlow || { start: jest.fn(async () => {}) };
+  const commands = createCardCommands({ bot, cardSheets, purchaseFlow: pFlow, paymentFlow: payFlow, now });
+  return { bot, doc, cardSheets, purchaseFlow: pFlow, paymentFlow: payFlow, commands };
 }
 
 describe('parseCardAdd', () => {
@@ -370,6 +371,40 @@ describe('parseCardTx', () => {
   test('rejects unknown category', () => {
     expect(parseCardTx('BPI-Gold purchase 500 Nonsense').valid).toBe(false);
   });
+
+  test('accepts a well-formed payment (no category)', () => {
+    const r = parseCardTx('BPI-Gold payment 1000');
+    expect(r.valid).toBe(true);
+    expect(r.values).toEqual({
+      nickname: 'BPI-Gold',
+      subtype: 'payment',
+      amount: 1000,
+      category: null,
+      notes: '',
+    });
+  });
+
+  test('payment joins trailing tokens into notes', () => {
+    const r = parseCardTx('BPI-Gold payment 1000 partial payment');
+    expect(r.valid).toBe(true);
+    expect(r.values).toMatchObject({ subtype: 'payment', amount: 1000, notes: 'partial payment' });
+  });
+
+  test('payment rejects invalid amount', () => {
+    expect(parseCardTx('BPI-Gold payment 0').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold payment abc').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold payment -5').valid).toBe(false);
+  });
+
+  test('payment rejects missing amount', () => {
+    expect(parseCardTx('BPI-Gold payment').valid).toBe(false);
+  });
+
+  test('payment subtype is case-insensitive', () => {
+    const r = parseCardTx('BPI-Gold PAYMENT 500');
+    expect(r.valid).toBe(true);
+    expect(r.values.subtype).toBe('payment');
+  });
 });
 
 describe('createCardCommands.handleTx (purchase)', () => {
@@ -421,6 +456,79 @@ describe('createCardCommands.handleTx (purchase)', () => {
     await commands.handleTx(1, 'BPI-Gold purchase 500 Groceries');
     expect(purchaseFlow.start).not.toHaveBeenCalled();
     expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+});
+
+describe('createCardCommands.handleTx (payment)', () => {
+  const cardRow = { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' };
+
+  test('happy path starts the payment flow with open cycles computed', async () => {
+    const { commands, paymentFlow, purchaseFlow } = wire({
+      CreditCards: [cardRow],
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-01', statement_amount: '1000', due_date: '2026-02-15', closed_at: '' },
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '800', due_date: '2026-03-15', closed_at: '' },
+      ],
+      CardTransactions: [
+        { card_name: 'BPI-Gold', type: 'payment', amount: '300', statement_cycle: '2026-02' },
+      ],
+    });
+    await commands.handleTx(1, 'BPI-Gold payment 400');
+    expect(purchaseFlow.start).not.toHaveBeenCalled();
+    expect(paymentFlow.start).toHaveBeenCalledTimes(1);
+    const [chatId, data] = paymentFlow.start.mock.calls[0];
+    expect(chatId).toBe(1);
+    expect(data.card_name).toBe('BPI-Gold');
+    expect(data.tx_date).toBe('2026-03-10');
+    expect(data.amount).toBe(400);
+    expect(data.cycles.map((c) => c.cycle_month)).toEqual(['2026-01', '2026-02']);
+    expect(data.cycles[1].outstanding).toBe(500);
+  });
+
+  test('uses canonical stored card_name even if user typed different case', async () => {
+    const { commands, paymentFlow } = wire({
+      CreditCards: [cardRow],
+      CardStatements: [{ card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '800', due_date: '2026-03-15', closed_at: '' }],
+    });
+    await commands.handleTx(1, 'bpi-gold payment 400');
+    expect(paymentFlow.start.mock.calls[0][1].card_name).toBe('BPI-Gold');
+  });
+
+  test('card not found → error message, flow not started', async () => {
+    const { bot, commands, paymentFlow } = wire({ CreditCards: [cardRow] });
+    await commands.handleTx(1, 'Unknown payment 400');
+    expect(paymentFlow.start).not.toHaveBeenCalled();
+    expect(bot.lastSent().text).toMatch(/not found/i);
+  });
+
+  test('no statements at all → flow starts with cycles=[] (payment-flow handles the empty case)', async () => {
+    const { commands, paymentFlow } = wire({ CreditCards: [cardRow] });
+    await commands.handleTx(1, 'BPI-Gold payment 400');
+    expect(paymentFlow.start).toHaveBeenCalledTimes(1);
+    expect(paymentFlow.start.mock.calls[0][1].cycles).toEqual([]);
+  });
+
+  test('fully-paid cycles are filtered out of the picker', async () => {
+    const { commands, paymentFlow } = wire({
+      CreditCards: [cardRow],
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-01', statement_amount: '1000', due_date: '2026-02-15', closed_at: '' },
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '800', due_date: '2026-03-15', closed_at: '' },
+      ],
+      CardTransactions: [
+        { card_name: 'BPI-Gold', type: 'payment', amount: '1000', statement_cycle: '2026-01' },
+      ],
+    });
+    await commands.handleTx(1, 'BPI-Gold payment 400');
+    const cycles = paymentFlow.start.mock.calls[0][1].cycles;
+    expect(cycles.map((c) => c.cycle_month)).toEqual(['2026-02']);
+  });
+
+  test('invalid amount → error message, flow not started', async () => {
+    const { bot, commands, paymentFlow } = wire({ CreditCards: [cardRow] });
+    await commands.handleTx(1, 'BPI-Gold payment 0');
+    expect(paymentFlow.start).not.toHaveBeenCalled();
+    expect(bot.lastSent().text).toMatch(/⚠️/);
   });
 });
 

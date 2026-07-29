@@ -61,4 +61,38 @@ function computeBalances(transactions) {
   return balances;
 }
 
-module.exports = { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate };
+// SPEC: an "open cycle" is a statement whose linked payments (sum of payment
+// tx with matching statement_cycle) fall short of statement_amount. Cycles are
+// returned oldest-first so the picker prompts the user to clear the most
+// overdue cycle first. Payments with empty statement_cycle are unlinked and
+// ignored here — they are not applied to any cycle.
+function computeOpenCycles(cardName, statements, transactions) {
+  const target = String(cardName).toLowerCase();
+  const paidMap = {};
+  for (const tx of transactions) {
+    if (tx.type !== 'payment') continue;
+    if (String(tx.card_name).toLowerCase() !== target) continue;
+    if (!tx.statement_cycle) continue;
+    const amount = Number(tx.amount);
+    if (!Number.isFinite(amount)) continue;
+    paidMap[tx.statement_cycle] = (paidMap[tx.statement_cycle] || 0) + amount;
+  }
+  const open = [];
+  for (const s of statements) {
+    if (String(s.card_name).toLowerCase() !== target) continue;
+    const statementAmount = Number(s.statement_amount);
+    const paid = paidMap[s.cycle_month] || 0;
+    if (paid >= statementAmount) continue;
+    open.push({
+      cycle_month: s.cycle_month,
+      due_date: s.due_date,
+      statement_amount: statementAmount,
+      paid,
+      outstanding: statementAmount - paid,
+    });
+  }
+  open.sort((a, b) => String(a.cycle_month).localeCompare(String(b.cycle_month)));
+  return open;
+}
+
+module.exports = { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles };
