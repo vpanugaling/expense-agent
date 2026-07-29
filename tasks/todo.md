@@ -98,7 +98,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
 
 ## Phase B: Sheet Extension
 
-- [ ] **Task E1** — `sheets.js` generates `tx_id` internally (`p_` prefix per CQ2); adds `paid_purchases`
+- [x] **Task E1** — `sheets.js` generates `tx_id` internally (`p_` prefix per CQ2); adds `paid_purchases`
   - Acceptance: `addTransaction` generates `tx_id` as `p_<epoch36>_<rand4hex>`, accepts optional `{ txId }` override for tests, returns `{ tx_id }`; `paid_purchases` written as CSV, read back as `string[]`; `listTransactions` synthesizes `ps_`-prefixed ids for legacy rows; purchase-tagged payments write empty `statement_cycle` (derived on read per 1A); no caller passes a caller-generated `tx_id`.
   - Verify: `cd bot && npm test card/__tests__/sheets.test.js`; full suite green.
   - Files: `bot/card/sheets.js`, `bot/card/__tests__/sheets.test.js`, `bot/index.js` (purchase/payment onConfirm sites drop the id arg; consume returned id).

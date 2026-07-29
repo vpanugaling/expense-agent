@@ -132,8 +132,8 @@ describe('createCardSheets.listTransactions', () => {
   test('returns coerced transactions', async () => {
     const doc = createFakeDoc({
       CardTransactions: [
-        { timestamp: 't1', card_name: 'BPI-Gold', tx_date: '2026-03-01', type: 'purchase', amount: '500', category: 'Groceries', notes: '', statement_cycle: '' },
-        { timestamp: 't2', card_name: 'BPI-Gold', tx_date: '2026-03-05', type: 'payment', amount: '200', category: '', notes: '', statement_cycle: '2026-02' },
+        { timestamp: 't1', card_name: 'BPI-Gold', tx_date: '2026-03-01', type: 'purchase', amount: '500', category: 'Groceries', notes: '', statement_cycle: '', tx_id: 'p_abc', paid_purchases: '' },
+        { timestamp: 't2', card_name: 'BPI-Gold', tx_date: '2026-03-05', type: 'payment', amount: '200', category: '', notes: '', statement_cycle: '2026-02', tx_id: 'p_def', paid_purchases: '' },
       ],
     });
     const sheets = createCardSheets({ getDoc: async () => doc });
@@ -147,13 +147,95 @@ describe('createCardSheets.listTransactions', () => {
     const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
     expect(await sheets.listTransactions()).toEqual([]);
   });
+
+  test('returns tx_id verbatim when column present on the row', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't1', card_name: 'BPI', tx_date: '2026-03-01', type: 'purchase', amount: '500', tx_id: 'p_known123' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].tx_id).toBe('p_known123');
+  });
+
+  test('synthesizes ps_-prefixed tx_id for legacy rows without a tx_id column', async () => {
+    const T = '2026-03-01T10:00:00.000Z';
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: T, card_name: 'BPI', tx_date: '2026-03-01', type: 'purchase', amount: '500' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].tx_id).toBe(`ps_${Date.parse(T)}_0`);
+  });
+
+  test('appends row-index suffix to synthesized ids so same-timestamp legacy rows do not collide', async () => {
+    const T = '2026-03-01T10:00:00.000Z';
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: T, card_name: 'BPI', tx_date: '2026-03-01', type: 'purchase', amount: '100' },
+        { timestamp: T, card_name: 'BPI', tx_date: '2026-03-01', type: 'purchase', amount: '200' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].tx_id).toBe(`ps_${Date.parse(T)}_0`);
+    expect(txs[1].tx_id).toBe(`ps_${Date.parse(T)}_1`);
+    expect(txs[0].tx_id).not.toBe(txs[1].tx_id);
+  });
+
+  test('parses paid_purchases CSV into string[]', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't', card_name: 'BPI', tx_date: '2026-03-01', type: 'payment', amount: '300', paid_purchases: 'p_a,p_b,p_c' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].paid_purchases).toEqual(['p_a', 'p_b', 'p_c']);
+  });
+
+  test('returns paid_purchases: [] when column is absent', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't', card_name: 'BPI', tx_date: '2026-03-01', type: 'payment', amount: '300' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].paid_purchases).toEqual([]);
+  });
+
+  test('returns paid_purchases: [] when column value is an empty string', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't', card_name: 'BPI', tx_date: '2026-03-01', type: 'payment', amount: '300', paid_purchases: '' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].paid_purchases).toEqual([]);
+  });
+
+  test('trims whitespace inside paid_purchases CSV and drops empty segments', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't', card_name: 'BPI', tx_date: '2026-03-01', type: 'payment', amount: '300', paid_purchases: ' p_a , p_b ,,p_c ' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs[0].paid_purchases).toEqual(['p_a', 'p_b', 'p_c']);
+  });
 });
 
 describe('createCardSheets.addTransaction', () => {
-  test('appends a row with all transaction fields', async () => {
+  test('appends a row with all transaction fields and returns generated tx_id', async () => {
     const doc = createFakeDoc({ CardTransactions: [] });
     const sheets = createCardSheets({ getDoc: async () => doc });
-    await sheets.addTransaction({
+    const result = await sheets.addTransaction({
       timestamp: '2026-03-10T00:00:00.000Z',
       card_name: 'BPI-Gold',
       tx_date: '2026-03-10',
@@ -163,18 +245,91 @@ describe('createCardSheets.addTransaction', () => {
       notes: 'SM',
       statement_cycle: '',
     });
-    expect(doc.sheetsByTitle.CardTransactions._snapshot()).toEqual([
-      {
-        timestamp: '2026-03-10T00:00:00.000Z',
-        card_name: 'BPI-Gold',
+    expect(result.tx_id).toMatch(/^p_[0-9a-z]+_[0-9a-f]{4}$/);
+    const snap = doc.sheetsByTitle.CardTransactions._snapshot();
+    expect(snap).toHaveLength(1);
+    expect(snap[0]).toMatchObject({
+      timestamp: '2026-03-10T00:00:00.000Z',
+      card_name: 'BPI-Gold',
+      tx_date: '2026-03-10',
+      type: 'purchase',
+      amount: 1234.5,
+      category: 'Groceries',
+      notes: 'SM',
+      statement_cycle: '',
+      tx_id: result.tx_id,
+      paid_purchases: '',
+    });
+  });
+
+  test('generates a fresh tx_id per call (no collisions across successive calls)', async () => {
+    const doc = createFakeDoc({ CardTransactions: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const seen = new Set();
+    for (let i = 0; i < 20; i++) {
+      const { tx_id } = await sheets.addTransaction({
+        timestamp: new Date().toISOString(),
+        card_name: 'BPI',
         tx_date: '2026-03-10',
         type: 'purchase',
-        amount: 1234.5,
-        category: 'Groceries',
-        notes: 'SM',
-        statement_cycle: '',
-      },
-    ]);
+        amount: 100,
+      });
+      expect(tx_id).toMatch(/^p_[0-9a-z]+_[0-9a-f]{4}$/);
+      expect(seen.has(tx_id)).toBe(false);
+      seen.add(tx_id);
+    }
+  });
+
+  test('honors optional { txId } override verbatim (for deterministic tests)', async () => {
+    const doc = createFakeDoc({ CardTransactions: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const result = await sheets.addTransaction({
+      timestamp: 't',
+      card_name: 'BPI',
+      tx_date: '2026-03-10',
+      type: 'purchase',
+      amount: 100,
+      txId: 'p_override_test',
+    });
+    expect(result.tx_id).toBe('p_override_test');
+    expect(doc.sheetsByTitle.CardTransactions._snapshot()[0].tx_id).toBe('p_override_test');
+  });
+
+  test('writes paid_purchases as CSV when array provided', async () => {
+    const doc = createFakeDoc({ CardTransactions: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    await sheets.addTransaction({
+      timestamp: 't',
+      card_name: 'BPI',
+      tx_date: '2026-03-10',
+      type: 'payment',
+      amount: 300,
+      paid_purchases: ['p_a', 'p_b', 'p_c'],
+    });
+    expect(doc.sheetsByTitle.CardTransactions._snapshot()[0].paid_purchases).toBe('p_a,p_b,p_c');
+  });
+
+  test('writes empty string when paid_purchases is [] or absent', async () => {
+    const doc = createFakeDoc({ CardTransactions: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    await sheets.addTransaction({
+      timestamp: 't1',
+      card_name: 'BPI',
+      tx_date: '2026-03-10',
+      type: 'purchase',
+      amount: 100,
+    });
+    await sheets.addTransaction({
+      timestamp: 't2',
+      card_name: 'BPI',
+      tx_date: '2026-03-10',
+      type: 'payment',
+      amount: 100,
+      paid_purchases: [],
+    });
+    const snap = doc.sheetsByTitle.CardTransactions._snapshot();
+    expect(snap[0].paid_purchases).toBe('');
+    expect(snap[1].paid_purchases).toBe('');
   });
 
   test('propagates MISSING_TAB when CardTransactions is absent', async () => {
