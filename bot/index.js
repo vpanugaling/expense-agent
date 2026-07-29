@@ -11,6 +11,7 @@ const { createCardCommands } = require('./card/commands');
 const { createPurchaseFlow } = require('./card/purchase-flow');
 const { createPurchasePicker } = require('./card/purchase-picker');
 const { createReminders } = require('./card/reminders');
+const { validatePrefixes } = require('./prefix-validator');
 const cron = require('node-cron');
 
 // Env
@@ -135,6 +136,11 @@ const purchasePicker = isTest ? null : createPurchasePicker({
 });
 if (purchasePicker) flowHandlers.push(purchasePicker);
 const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow, purchasePicker });
+
+// Fail fast at boot if any two flow-handler prefixes collide. `startsWith`-based
+// dispatch means a shorter prefix silently swallows callbacks for a longer one,
+// which is invisible until a specific button tap misroutes in production.
+validatePrefixes(['receipt_', 'card_purchase_', 'card_ppay_']);
 
 // Daily 21:00 Asia/Manila reminder job. Disabled during tests so the process
 // exits cleanly without a dangling cron handle.

@@ -126,7 +126,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
   - Files: `bot/card/commands.js`, `bot/card/__tests__/commands.test.js`, `bot/card/__tests__/purchase-payment-e2e.test.js` (T1), `bot/index.js`, `SPEC.md`; **DELETE** `bot/card/payment-flow.js`, **DELETE** `bot/card/__tests__/payment-flow.test.js`.
   - Deps: E2b.
 
-- [ ] **Task E3b** — Startup-time prefix-registry validator (Architecture 2A)
+- [x] **Task E3b** — Startup-time prefix-registry validator (Architecture 2A)
   - Acceptance: `validatePrefixes(prefixes)` throws on any proper-prefix collision, names both offenders; passes with current registrations; invoked at boot before polling/webhook.
   - Verify: `cd bot && npm test __tests__/prefix-validator.test.js`.
   - Files: `bot/prefix-validator.js`, `bot/__tests__/prefix-validator.test.js`, `bot/index.js` (invoke at boot).
