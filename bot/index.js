@@ -10,6 +10,8 @@ const { createCardSheets } = require('./card/sheets');
 const { createCardCommands } = require('./card/commands');
 const { createPurchaseFlow } = require('./card/purchase-flow');
 const { createPaymentFlow } = require('./card/payment-flow');
+const { createReminders } = require('./card/reminders');
+const cron = require('node-cron');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -129,6 +131,16 @@ const paymentFlow = isTest ? null : createPaymentFlow({
 });
 if (paymentFlow) flowHandlers.push(paymentFlow);
 const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow });
+
+// Daily 21:00 Asia/Manila reminder job. Disabled during tests so the process
+// exits cleanly without a dangling cron handle.
+const reminders = isTest ? null : createReminders({
+  bot,
+  cardSheets,
+  allowedUserIds: ALLOWED_USER_IDS,
+  cron,
+});
+if (reminders) reminders.start();
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {

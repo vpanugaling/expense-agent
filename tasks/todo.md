@@ -74,9 +74,10 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
   - Files: `bot/card/commands.js`, `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`, `bot/card/__tests__/commands.test.js`.
   - Status: 270/270 tests pass (+13 for Task 5: 6 `computeCardDue` tests, 6 `handleDue` tests, 1 dispatch route test). Manual Telegram verification pending.
 
-- [ ] **Task 6** — `node-cron` reminder job (two-phase, explicit TZ)
+- [x] **Task 6** — `node-cron` reminder job (two-phase, explicit TZ)
   - Acceptance: fires daily 9pm PHT via explicit `{ timezone }`; two-phase (cards first, statements only if match); T-3 and T-0 messages to every `ALLOWED_USER_IDS`; skipped when `NODE_ENV=test`.
   - Verify: `cd bot && npm test` (`shouldRemind` boundaries incl. leap/DST + two-phase logic); manual `*/1 * * * *` observe; revert.
   - Files: `bot/package.json`, `bot/card/reminders.js`, `bot/card/__tests__/reminders.test.js`, `bot/index.js`.
+  - Status: 294/294 tests pass (+24 for Task 6: 9 `shouldRemind` boundary tests incl. leap year, month/year rollover, DST-safe UTC arithmetic; 8 `computeCardReminders` two-phase tests; 4 `createReminders.run` tests; 2 `createReminders.start` cron-schedule tests). Manual `*/1 * * * *` observation pending.
 
 - [ ] **Checkpoint: Complete** — all tests pass, `/card due` correct, reminder observed live, existing flows unchanged, TZ verified in prod container. Ready for review.
