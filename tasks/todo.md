@@ -106,7 +106,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
 
 ## Phase C: Interactive Picker
 
-- [ ] **Task E2a** — Extract `bot/two-phase-picker.js` shared abstraction (Architecture 3A)
+- [x] **Task E2a** — Extract `bot/two-phase-picker.js` shared abstraction (Architecture 3A)
   - Acceptance: `createTwoPhasePicker({ prefix, pickerRender, onPick, confirmFlow })` handles picker-phase state, `editMessageText` re-renders, foreign-prefix passthrough, `pick_cancel` intercept before confirmFlow onStale; `handleTextInput` delegates to confirmFlow; unit-tested with fake `pickerRender`/`onPick`. **T2 concurrency tests:** two-chat isolation; re-`start()` on same chat replaces state silently (old buttons no-op); picker state survives unrelated dispatches.
   - Verify: `cd bot && npm test __tests__/two-phase-picker.test.js`.
   - Files: `bot/two-phase-picker.js`, `bot/__tests__/two-phase-picker.test.js`, `bot/test-utils/mock-bot.js` (add `editMessageText`; `sendMessage` returns `{ message_id }`).
