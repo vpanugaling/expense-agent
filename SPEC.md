@@ -235,3 +235,115 @@ async function sendCardTxConfirmation(chatId, tx) {
 ## Open Questions
 
 None at spec time — all clarifications resolved. Reopen this section if implementation surfaces new decisions.
+
+---
+
+# Feature Extension: Purchase-Tagged Payments
+
+**Added:** 2026-07-29
+
+## Objective
+
+When logging a payment via `/card tx <nickname> payment <amount>`, the picker now lists the card's **unpaid purchases** instead of open statement cycles. The user multi-selects which purchases the payment covers. The `statement_cycle` a payment settles is *derived* from the tagged purchases' dates, not user-picked.
+
+**Why:** Cycle-level payment tracking hides which specific purchases have been paid off. Purchase-level tagging answers "did I pay for last Tuesday's grocery run yet?"
+
+**Impact summary:**
+- `/card tx payment` no longer shows a cycle picker. It shows an unpaid-purchase picker (multi-select).
+- Legacy payments (existing rows with only `statement_cycle`, no `paid_purchases`) continue to count toward `computeOpenCycles` and `computeBalances`. Backward-compatible.
+- `/card list`, `/card due`, and reminders are unchanged — they still consume cycle-level state, which is now derived from tagged purchases where present.
+
+## Sheet Schema Changes
+
+**`CardTransactions`** — add two columns (order shown; existing columns unchanged):
+```
+timestamp | tx_id | card_name | tx_date | type | amount | category | notes | statement_cycle | paid_purchases
+```
+- `tx_id` — short opaque ID (e.g. `p_a1b2c3d4`), assigned when a row is written. Every purchase and payment gets one. Immutable.
+- `paid_purchases` — comma-separated `tx_id` list. Set only on payment rows that tag purchases. Empty on purchase rows and on legacy cycle-only payments.
+
+**Migration posture:** new columns are additive. Existing rows have empty `tx_id`/`paid_purchases`. On read, `sheets.js` synthesizes a stable `tx_id` for legacy rows (e.g. `p_<epoch-from-timestamp>`) so tagging works — but the sheet is *not* backfilled automatically. Manual backfill is out of scope for this feature.
+
+## Payment-Picker Flow
+
+1. `/card tx BPI-Gold payment 500`
+2. Bot loads unpaid purchases for BPI-Gold. A purchase is "unpaid" iff no existing payment row references its `tx_id` in `paid_purchases`. **Legacy cycle-only payments do NOT auto-mark any specific purchase as paid** — they only reduce the cycle's outstanding balance, as before.
+3. Bot renders a multi-select keyboard, one row per unpaid purchase: `[◻] 2026-07-15 · Groceries · ₱120`. Tapping toggles selection (label flips to `[✓]`). The message header shows a live running total that updates on every toggle: `Selected: ₱420 / ₱500 typed  · 3 of 7 purchases`. Bottom row: `[✅ Done]  [❌ Cancel]`.
+4. On `[✅ Done]`: bot delegates to the shared confirm-flow with a preview: `Payment: ₱500 · Card: BPI-Gold · Covers 3 purchases (₱420) · Cycle: 2026-07 · Excess ₱80 credits cycle`. Confirm writes the payment row.
+5. If BPI-Gold has zero unpaid purchases: `⚠️ No unpaid purchases for BPI-Gold. Add one first, or use /card statement to close a cycle.` (No cycle-picker fallback in this command.)
+6. If the user selects zero purchases and hits Done: `⚠️ Select at least one purchase, or Cancel.`
+
+## Cycle Derivation from Tagged Purchases
+
+At Confirm time, the payment row's `statement_cycle` is derived:
+- For each tagged purchase, compute `deriveCycleMonth(card.statement_day, tx_date)`.
+- If all tagged purchases fall in the same cycle → that becomes `statement_cycle`.
+- If they span multiple cycles → `statement_cycle` is empty. Preview warns: `⚠️ These purchases span multiple cycles (2026-06, 2026-07). Cycle balance will not be updated.`
+
+## Overpayment Handling (payment.amount > SUM(tagged))
+
+- Tagged purchases are marked paid (their `tx_id` appears in `paid_purchases`).
+- Excess flows into cycle-level accounting via the existing `computeOpenCycles` carryforward (from the Critical #2 fix): the payment credits its derived cycle by the *full* `amount` — not just SUM(tagged). Excess beyond the cycle's outstanding rolls forward to later cycles.
+- Multi-cycle selection (empty `statement_cycle`): excess has nowhere to land at the cycle level. It still appears in `computeBalances` (SUM purchases − SUM payments). Preview surfaces this: `⚠️ ₱X excess cannot credit any cycle (multi-cycle selection).`
+
+## New / Modified Modules
+
+- **`bot/card/purchases.js`** *(new)*: pure functions.
+  - `synthesizeTxId(row)` — deterministic ID for legacy rows without `tx_id`.
+  - `listUnpaidPurchases(cardName, transactions)` — returns purchases whose `tx_id` is not in any payment row's `paid_purchases`. Case-insensitive card match. Legacy purchase rows get IDs synthesized on the fly.
+  - `inferCycleFromPurchases(purchases, statementDay)` — returns `{ cycle_month }` or `{ multi: true, cycles: [...] }` or `{ empty: true }`.
+- **`bot/card/purchase-picker.js`** *(new)*: stateful multi-select picker, keyed by chatId. Same two-phase architecture as `payment-flow.js` (picker phase → confirm-flow delegation). Picker phase owns a Map of `{ card_name, amount, allPurchases, selectedIds: Set, messageId }`. Toggle callbacks recompute the running total (SUM of selectedIds' amounts) and re-render via `editMessageText` so the header shows `Selected: ₱X / ₱Y typed · N of M purchases` with updated `[✓]`/`[◻]` button labels. Storing `messageId` lets us edit in place instead of spamming new messages.
+- **`bot/card/sheets.js`** *(extended)*: `addTransaction` generates a `tx_id` if absent. `listTransactions` synthesizes `tx_id` for legacy rows on read (so downstream code sees a consistent shape). No mutation of existing purchase rows — paid state is always derived from payment rows.
+- **`bot/card/commands.js`** *(modified)*: `handleTx`, payment branch, now calls `purchasePicker.start(...)` instead of `paymentFlow.start(...)`.
+- **`bot/card/balance.js`** *(extended)*: `computeOpenCycles` unchanged in shape. Its `paid` accounting continues to sum by `statement_cycle`, so purchase-tagged payments (which derive `statement_cycle`) settle their cycle correctly. New purity: no behavior change for legacy payments.
+- **`bot/card/payment-flow.js`** *(unchanged in this extension)*: retained for now — internal-only. Wire in `bot/index.js` is updated so `/card tx payment` routes to `purchasePicker`, but `paymentFlow` module remains and is not removed (removal is a separate cleanup task, "Ask first" per Boundaries).
+
+## Callback Naming
+
+New prefix: `card_purchase_pick_*` for the picker phase (parallel to the existing `card_payment_pick_*`):
+- `card_purchase_pick_toggle_<tx_id>` — toggle a purchase selection.
+- `card_purchase_pick_done` — advance to confirm-flow.
+- `card_purchase_pick_cancel` — abort picker phase (intercepted before confirm-flow onStale, same pattern as `payment-flow.js`).
+
+The confirm-flow itself uses prefix `card_purchase_payment_*` to avoid collision with `card_purchase_*` (existing purchase-tx flow).
+
+## Testing Strategy
+
+- Unit: `synthesizeTxId` determinism; `listUnpaidPurchases` (empty tags, tagged, multi-tagged, legacy rows, case-insensitive card match, other-card exclusion); `inferCycleFromPurchases` (single-cycle, multi-cycle, empty, statement_day boundary).
+- Unit: `computeOpenCycles` regression — a payment with `paid_purchases` set still credits its `statement_cycle` correctly; overpayment carries through.
+- Integration: `purchase-picker.js` — toggle state persists across re-renders, running total updates correctly on toggle (SUM matches typed amount when all selected sums to typed; header shows counts), `editMessageText` is called instead of `sendMessage` on toggle, Done → confirm-flow with the right data, picker-phase Cancel doesn't onStale, zero-selection Done shows warning, foreign-prefix delegation returns false.
+- Integration: `handleTx` payment path — routes to purchase-picker (not paymentFlow), empty-unpaid shows warning, happy path writes `CardTransactions` row with `tx_id`, `paid_purchases` (CSV, ordered by selection), derived `statement_cycle`.
+- Backward-compat: every existing card test suite passes unchanged (cycle-only payment logic is not modified).
+
+## Boundaries (Extension)
+
+**Always (in addition to parent spec):**
+- Generate `tx_id` at write time. Never expose it as a required user input field.
+- Preserve legacy cycle-only payment semantics — do not backfill or mutate their rows.
+- Escape user-controlled fields (card_name, notes, purchase categories) in Markdown-mode messages via `bot/markdown.js` (`escapeMd`).
+
+**Ask first:**
+- Backfilling `tx_id` into existing sheet rows.
+- Removing `bot/card/payment-flow.js` (cycle picker) — currently retained for potential future use.
+- Any UX change to `/card list`, `/card due`, or reminders (this extension is scoped to `/card tx payment`).
+- Pagination of the picker keyboard (only if a real user hits Telegram's message-size limit).
+
+**Never:**
+- Mutate a purchase row to mark it "paid" — paid state is always derived from payment rows' `paid_purchases`.
+- Edit or delete a payment row's `paid_purchases` after write. To correct a mistake the user logs a corrective payment; the audit trail stays intact.
+
+## Success Criteria (Extension)
+
+- [ ] `/card tx <nickname> payment <amount>` lists unpaid purchases with toggle buttons.
+- [ ] Confirm writes a `CardTransactions` row with `tx_id`, `paid_purchases` (CSV), and a derived `statement_cycle`.
+- [ ] Multi-cycle selection warns the user and leaves `statement_cycle` empty; the payment still tags the purchases correctly.
+- [ ] Overpayment excess flows through the cycle carryforward (Critical #2 semantics preserved).
+- [ ] Legacy payments (cycle-only, no `paid_purchases`) still count toward `computeOpenCycles` and `computeBalances`.
+- [ ] `/card list`, `/card due`, and reminders show unchanged output for pre-existing data.
+- [ ] Existing 316-test suite stays green; new suites cover picker, purchases module, and inference.
+- [ ] Manual Telegram walkthrough: register card → log 3 purchases → pay 2 of them → verify `/card list` balance drops by the tagged sum + excess.
+
+## Open Questions (Extension)
+
+- Pagination when a card has 30+ unpaid purchases? Deferred until it bites.
+

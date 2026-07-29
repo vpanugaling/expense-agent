@@ -81,3 +81,63 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
   - Status: 294/294 tests pass (+24 for Task 6: 9 `shouldRemind` boundary tests incl. leap year, month/year rollover, DST-safe UTC arithmetic; 8 `computeCardReminders` two-phase tests; 4 `createReminders.run` tests; 2 `createReminders.start` cron-schedule tests). Manual `*/1 * * * *` observation pending.
 
 - [ ] **Checkpoint: Complete** — all tests pass, `/card due` correct, reminder observed live, existing flows unchanged, TZ verified in prod container. Ready for review.
+
+---
+
+# Extension: Purchase-Tagged Payments (2026-07-29)
+
+Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payments"; [tasks/plan.md](plan.md) → "Extension Plan".
+
+## Phase A: Pure Foundation
+
+- [ ] **Task E0** — `bot/card/purchases.js` (4 pure fns) + unit tests
+  - Acceptance: `synthesizeTxId` (`ps_`-prefixed per CQ2), `listUnpaidPurchases`, `inferCycleFromPurchases`, `hydratePurchases` (CQ4) all pure; case-insensitive card match; multi-cycle/empty/single-cycle branches covered; statement_day boundary covered; `hydratePurchases` skips unknown ids without throwing. **T3 tests:** legacy cycle-only payment leaves purchases as unpaid; purchase-tagged marks paid; mixed history shows only legacy as unpaid; quirk documented in header comment.
+  - Verify: `cd bot && npm test card/__tests__/purchases.test.js`; full suite still green.
+  - Files: `bot/card/purchases.js`, `bot/card/__tests__/purchases.test.js`.
+  - Deps: none.
+
+## Phase B: Sheet Extension
+
+- [ ] **Task E1** — `sheets.js` generates `tx_id` internally (`p_` prefix per CQ2); adds `paid_purchases`
+  - Acceptance: `addTransaction` generates `tx_id` as `p_<epoch36>_<rand4hex>`, accepts optional `{ txId }` override for tests, returns `{ tx_id }`; `paid_purchases` written as CSV, read back as `string[]`; `listTransactions` synthesizes `ps_`-prefixed ids for legacy rows; purchase-tagged payments write empty `statement_cycle` (derived on read per 1A); no caller passes a caller-generated `tx_id`.
+  - Verify: `cd bot && npm test card/__tests__/sheets.test.js`; full suite green.
+  - Files: `bot/card/sheets.js`, `bot/card/__tests__/sheets.test.js`, `bot/index.js` (purchase/payment onConfirm sites drop the id arg; consume returned id).
+  - Deps: E0.
+
+## Phase C: Interactive Picker
+
+- [ ] **Task E2a** — Extract `bot/two-phase-picker.js` shared abstraction (Architecture 3A)
+  - Acceptance: `createTwoPhasePicker({ prefix, pickerRender, onPick, confirmFlow })` handles picker-phase state, `editMessageText` re-renders, foreign-prefix passthrough, `pick_cancel` intercept before confirmFlow onStale; `handleTextInput` delegates to confirmFlow; unit-tested with fake `pickerRender`/`onPick`. **T2 concurrency tests:** two-chat isolation; re-`start()` on same chat replaces state silently (old buttons no-op); picker state survives unrelated dispatches.
+  - Verify: `cd bot && npm test __tests__/two-phase-picker.test.js`.
+  - Files: `bot/two-phase-picker.js`, `bot/__tests__/two-phase-picker.test.js`, `bot/test-utils/mock-bot.js` (add `editMessageText`; `sendMessage` returns `{ message_id }`).
+  - Deps: none new.
+
+- [ ] **Task E2b** — `purchase-picker.js` on the shared abstraction (CQ1: no legacy refactor)
+  - Acceptance: in-place toggle via `editMessageText`; accurate running total; multi-cycle sets `statement_cycle=''` + surfaces warning; zero-selection Done warns; foreign-prefix returns false. **T4 enforcement:** Done blocks if `sum(selected) !== amountTyped` with warning; tests cover all 3 cases (equal proceeds; over/under blocked). `payment-flow.js` NOT touched here (deleted in E3 per CQ1).
+  - Verify: `cd bot && npm test card/__tests__/purchase-picker.test.js`.
+  - Files: `bot/card/purchase-picker.js`, `bot/card/__tests__/purchase-picker.test.js`.
+  - Deps: E0, E1, E2a.
+
+## Phase D: Wire the Command
+
+- [ ] **Task E3** — `handleTx` routes to picker; `index.js` wires it; **delete `payment-flow.js` (CQ1)**; SPEC corrected to `card_ppay_`; **T1 e2e integration test**
+  - Acceptance: `/card tx X payment 500` triggers purchase-picker; empty-unpaid path warns; happy path writes row with generated `p_`-prefixed `tx_id`, `paid_purchases` CSV, empty `statement_cycle` on multi-cycle; `grep -r paymentFlow bot/` returns zero hits; SPEC callback naming updated (`card_ppay_` in, `card_pay_` out); SPEC states T4 sum-equals-amount constraint; e2e test file exists and passes.
+  - Verify: `cd bot && npm test`; full suite green.
+  - Files: `bot/card/commands.js`, `bot/card/__tests__/commands.test.js`, `bot/card/__tests__/purchase-payment-e2e.test.js` (T1), `bot/index.js`, `SPEC.md`; **DELETE** `bot/card/payment-flow.js`, **DELETE** `bot/card/__tests__/payment-flow.test.js`.
+  - Deps: E2b.
+
+- [ ] **Task E3b** — Startup-time prefix-registry validator (Architecture 2A)
+  - Acceptance: `validatePrefixes(prefixes)` throws on any proper-prefix collision, names both offenders; passes with current registrations; invoked at boot before polling/webhook.
+  - Verify: `cd bot && npm test __tests__/prefix-validator.test.js`.
+  - Files: `bot/prefix-validator.js`, `bot/__tests__/prefix-validator.test.js`, `bot/index.js` (invoke at boot).
+  - Deps: E3.
+
+## Phase E: Regression
+
+- [ ] **Task E4** — `balance.js` derives statement_cycle on read (1A) + CQ3 sig + CQ4 hydration + P1 index reuse; P2 reminders fix; regression tests
+  - Acceptance: `resolvePaymentCycle(payment, card, purchaseIndex)` resolves stored cycle when present else `hydratePurchases` + `inferCycleFromPurchases`; `computeOpenCycles(card, statements, transactions, purchaseIndex?)` + `computeCardDue(card, statements, transactions, today, purchaseIndex?)` drop `cardName` (CQ3) and accept optional pre-built index (P1); `buildPurchaseIndex(transactions)` helper exposed; purchase-tagged single-cycle credits derived cycle like legacy; multi-cycle contributes zero to cycles but full amount to `computeBalances`; overpayment carryforward preserved; legacy payments unaffected; unknown tx_ids silently skipped. **P2:** `computeCardReminders` groups statements by card, calls `computeOpenCycles` once per card (not per statement) — overpaid cycle A no longer emits spurious reminder for open cycle B.
+  - Verify: `cd bot && npm test card/__tests__/balance.test.js card/__tests__/reminders.test.js`; full suite green after call-site updates.
+  - Files: `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`, `bot/card/commands.js`, `bot/card/reminders.js`, `bot/card/__tests__/reminders.test.js`.
+  - Deps: E1, E0.
+
+- [ ] **Checkpoint: Extension Complete** — full suite green (~370+); manual walkthrough per plan; SPEC synced; human review before ship.
