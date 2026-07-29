@@ -34,6 +34,43 @@ function createCardSheets({ getDoc }) {
     return cards.find((c) => String(c.card_name).toLowerCase() === target) || null;
   }
 
+  // Missing tab returns [] intentionally — /card list renders zero-balance
+  // for every card in that scenario rather than showing a setup message.
+  async function listTransactions() {
+    let sheet;
+    try {
+      sheet = await getTab('CardTransactions');
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return [];
+      throw err;
+    }
+    const rows = await sheet.getRows();
+    return rows.map((row) => ({
+      timestamp: row.get('timestamp'),
+      card_name: row.get('card_name'),
+      tx_date: row.get('tx_date'),
+      type: row.get('type'),
+      amount: Number(row.get('amount')),
+      category: row.get('category') || '',
+      notes: row.get('notes') || '',
+      statement_cycle: row.get('statement_cycle') || '',
+    }));
+  }
+
+  async function addTransaction(tx) {
+    const sheet = await getTab('CardTransactions');
+    await sheet.addRow({
+      timestamp: tx.timestamp,
+      card_name: tx.card_name,
+      tx_date: tx.tx_date,
+      type: tx.type,
+      amount: tx.amount,
+      category: tx.category || '',
+      notes: tx.notes || '',
+      statement_cycle: tx.statement_cycle || '',
+    });
+  }
+
   async function addCard(card) {
     const sheet = await getTab('CreditCards');
     await sheet.addRow({
@@ -71,7 +108,7 @@ function createCardSheets({ getDoc }) {
     return { changed };
   }
 
-  return { getTab, listCards, findCard, addCard, renameCardInTab };
+  return { getTab, listCards, findCard, addCard, listTransactions, addTransaction, renameCardInTab };
 }
 
 module.exports = { createCardSheets };

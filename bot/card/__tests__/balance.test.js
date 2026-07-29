@@ -1,4 +1,4 @@
-const { nextDueDate } = require('../balance');
+const { nextDueDate, computeBalances } = require('../balance');
 
 // All dates are treated as UTC calendar dates (no time component).
 // See balance.js — using getUTC*/Date.UTC avoids TZ drift under jest.
@@ -38,5 +38,52 @@ describe('nextDueDate', () => {
 
   test('handles due_day=1 correctly (today after → next month 1st)', () => {
     expect(nextDueDate(1, utc(2026, 3, 15))).toBe('2026-04-01');
+  });
+});
+
+describe('computeBalances', () => {
+  test('returns empty map when there are no transactions', () => {
+    expect(computeBalances([])).toEqual({});
+  });
+
+  test('sums purchases per card', () => {
+    const balances = computeBalances([
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 100 },
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 250 },
+      { card_name: 'Metrobank', type: 'purchase', amount: 500 },
+    ]);
+    expect(balances).toEqual({ 'BPI-Gold': 350, Metrobank: 500 });
+  });
+
+  test('subtracts payments from purchases', () => {
+    const balances = computeBalances([
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 1000 },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 300 },
+    ]);
+    expect(balances).toEqual({ 'BPI-Gold': 700 });
+  });
+
+  test('allows negative balance from overpayment', () => {
+    const balances = computeBalances([
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 100 },
+      { card_name: 'BPI-Gold', type: 'payment', amount: 250 },
+    ]);
+    expect(balances).toEqual({ 'BPI-Gold': -150 });
+  });
+
+  test('coerces string amounts', () => {
+    const balances = computeBalances([
+      { card_name: 'BPI-Gold', type: 'purchase', amount: '1000.50' },
+      { card_name: 'BPI-Gold', type: 'payment', amount: '250' },
+    ]);
+    expect(balances['BPI-Gold']).toBeCloseTo(750.5);
+  });
+
+  test('ignores rows with unknown type', () => {
+    const balances = computeBalances([
+      { card_name: 'BPI-Gold', type: 'purchase', amount: 100 },
+      { card_name: 'BPI-Gold', type: 'weird', amount: 999 },
+    ]);
+    expect(balances).toEqual({ 'BPI-Gold': 100 });
   });
 });

@@ -42,10 +42,11 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
 
 ## Phase 2: Purchase Flow
 
-- [ ] **Task 2** — `/card tx purchase` end-to-end
+- [x] **Task 2** — `/card tx purchase` end-to-end
   - Acceptance: purchase flow with Confirm / Edit Amount / Edit Category / Edit Date / Cancel via `confirm-flow.js`; writes `CardTransactions` (type=purchase) only on Confirm; `/card list` balance updates; amount validated.
   - Verify: `cd bot && npm test`; manual happy + edit + cancel.
   - Files: `bot/card/commands.js`, `bot/card/sheets.js`, `bot/card/balance.js`, `bot/card/__tests__/*`.
+  - Status: 184/184 tests pass (+35 for Task 2: purchase-flow, sheets.addTransaction, sheets.listTransactions, balance.computeBalances, parseCardTx, handleTx, /card list balance rendering). Manual Telegram verification pending.
 
 - [ ] **Checkpoint: Purchase** — tests green, all confirm buttons validated, running balance correct, human review before Phase 3.
 

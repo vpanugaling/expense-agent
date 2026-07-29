@@ -128,6 +128,63 @@ describe('createCardSheets.addCard', () => {
   });
 });
 
+describe('createCardSheets.listTransactions', () => {
+  test('returns coerced transactions', async () => {
+    const doc = createFakeDoc({
+      CardTransactions: [
+        { timestamp: 't1', card_name: 'BPI-Gold', tx_date: '2026-03-01', type: 'purchase', amount: '500', category: 'Groceries', notes: '', statement_cycle: '' },
+        { timestamp: 't2', card_name: 'BPI-Gold', tx_date: '2026-03-05', type: 'payment', amount: '200', category: '', notes: '', statement_cycle: '2026-02' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const txs = await sheets.listTransactions();
+    expect(txs).toHaveLength(2);
+    expect(txs[0]).toMatchObject({ card_name: 'BPI-Gold', type: 'purchase', amount: 500, category: 'Groceries' });
+    expect(txs[1]).toMatchObject({ card_name: 'BPI-Gold', type: 'payment', amount: 200, statement_cycle: '2026-02' });
+  });
+
+  test('returns [] when the CardTransactions tab is missing (fresh setup)', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    expect(await sheets.listTransactions()).toEqual([]);
+  });
+});
+
+describe('createCardSheets.addTransaction', () => {
+  test('appends a row with all transaction fields', async () => {
+    const doc = createFakeDoc({ CardTransactions: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    await sheets.addTransaction({
+      timestamp: '2026-03-10T00:00:00.000Z',
+      card_name: 'BPI-Gold',
+      tx_date: '2026-03-10',
+      type: 'purchase',
+      amount: 1234.5,
+      category: 'Groceries',
+      notes: 'SM',
+      statement_cycle: '',
+    });
+    expect(doc.sheetsByTitle.CardTransactions._snapshot()).toEqual([
+      {
+        timestamp: '2026-03-10T00:00:00.000Z',
+        card_name: 'BPI-Gold',
+        tx_date: '2026-03-10',
+        type: 'purchase',
+        amount: 1234.5,
+        category: 'Groceries',
+        notes: 'SM',
+        statement_cycle: '',
+      },
+    ]);
+  });
+
+  test('propagates MISSING_TAB when CardTransactions is absent', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    await expect(sheets.addTransaction({ card_name: 'X', type: 'purchase' })).rejects.toMatchObject({
+      code: 'MISSING_TAB',
+    });
+  });
+});
+
 describe('createCardSheets.renameCardInTab', () => {
   test('rewrites matching rows and returns the count of rows changed', async () => {
     const doc = createFakeDoc({

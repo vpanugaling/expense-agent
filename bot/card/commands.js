@@ -1,5 +1,6 @@
-const { validateNickname, validateLimit, validateDay } = require('./validators');
-const { nextDueDate } = require('./balance');
+const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
+const { nextDueDate, computeBalances } = require('./balance');
+const { findCategory } = require('../categories');
 
 const LAST4_REGEX = /^\d{4}$/;
 
@@ -38,6 +39,39 @@ function parseCardAdd(argsText) {
   };
 }
 
+// /card tx <nickname> purchase <amount> <category> [note...]
+// (payment lands in Task 4 with a separate parser + cycle picker.)
+function parseCardTx(argsText) {
+  const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 4) {
+    return {
+      valid: false,
+      error: 'Usage: /card tx <nickname> purchase <amount> <category> [note]',
+    };
+  }
+  const [nickname, subtypeRaw, amountRaw, categoryRaw, ...rest] = parts;
+  const subtype = subtypeRaw.toLowerCase();
+  if (subtype !== 'purchase') {
+    return { valid: false, error: `Unknown transaction type "${subtypeRaw}". Only "purchase" is supported here.` };
+  }
+  const amt = validateAmount(amountRaw);
+  if (!amt.valid) return { valid: false, error: amt.error };
+  const category = findCategory(categoryRaw);
+  if (!category) {
+    return { valid: false, error: `Unknown category "${categoryRaw}".` };
+  }
+  return {
+    valid: true,
+    values: {
+      nickname,
+      subtype,
+      amount: amt.value,
+      category,
+      notes: rest.join(' '),
+    },
+  };
+}
+
 function parseCardRename(argsText) {
   const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length !== 2) {
@@ -59,7 +93,11 @@ function missingTabMessage() {
   return '⚠️ CreditCards tab not found. Please create a "CreditCards" tab with columns: card_name, last4, credit_limit, statement_day, due_day, created_at.';
 }
 
-function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
+function toIsoDate(d) {
+  return d.toISOString().split('T')[0];
+}
+
+function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Date() }) {
   async function handleAdd(chatId, argsText) {
     const parsed = parseCardAdd(argsText);
     if (!parsed.valid) {
@@ -118,16 +156,42 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
       return bot.sendMessage(chatId, '💳 You have no cards yet. Add one with /card add <nickname> <last4> <credit_limit> <statement_day> <due_day>');
     }
 
+    const transactions = await cardSheets.listTransactions();
+    const balances = computeBalances(transactions);
     const today = now();
     const lines = ['💳 *Your cards*', ''];
     for (const c of cards) {
+      const balance = balances[c.card_name] || 0;
       lines.push(
         `*${c.card_name}* (••${c.last4})\n` +
-          `  Limit: ₱${formatPeso(c.credit_limit)} • Balance: ₱0\n` +
+          `  Limit: ₱${formatPeso(c.credit_limit)} • Balance: ₱${formatPeso(balance)}\n` +
           `  Next due: ${nextDueDate(c.due_day, today)}`,
       );
     }
     return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+  }
+
+  async function handleTx(chatId, argsText) {
+    const parsed = parseCardTx(argsText);
+    if (!parsed.valid) return bot.sendMessage(chatId, `⚠️ ${parsed.error}`);
+    const { nickname, amount, category, notes } = parsed.values;
+
+    let card;
+    try {
+      card = await cardSheets.findCard(nickname);
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return bot.sendMessage(chatId, missingTabMessage());
+      throw err;
+    }
+    if (!card) return bot.sendMessage(chatId, `⚠️ Card "${nickname}" not found.`);
+
+    await purchaseFlow.start(chatId, {
+      card_name: card.card_name,
+      tx_date: toIsoDate(now()),
+      amount,
+      category,
+      notes,
+    });
   }
 
   async function handleRename(chatId, argsText) {
@@ -223,7 +287,8 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
           'Usage:\n' +
           '/card add <nickname> <last4> <credit_limit> <statement_day> <due_day>\n' +
           '/card list — show all registered cards\n' +
-          '/card rename <old-nickname> <new-nickname>',
+          '/card rename <old-nickname> <new-nickname>\n' +
+          '/card tx <nickname> purchase <amount> <category> [note]',
         { parse_mode: 'Markdown' },
       );
       return true;
@@ -245,15 +310,19 @@ function createCardCommands({ bot, cardSheets, now = () => new Date() }) {
       await handleRename(chatId, subArgs);
       return true;
     }
+    if (sub === 'tx') {
+      await handleTx(chatId, subArgs);
+      return true;
+    }
 
     await bot.sendMessage(
       chatId,
-      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename`,
+      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename, /card tx`,
     );
     return true;
   }
 
-  return { handleAdd, handleList, handleRename, dispatch };
+  return { handleAdd, handleList, handleRename, handleTx, dispatch };
 }
 
-module.exports = { parseCardAdd, parseCardRename, createCardCommands };
+module.exports = { parseCardAdd, parseCardRename, parseCardTx, createCardCommands };

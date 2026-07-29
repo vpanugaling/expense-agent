@@ -1,14 +1,15 @@
-const { parseCardAdd, parseCardRename, createCardCommands } = require('../commands');
+const { parseCardAdd, parseCardRename, parseCardTx, createCardCommands } = require('../commands');
 const { createCardSheets } = require('../sheets');
 const { createFakeDoc } = require('../../test-utils/fake-sheet');
 const { createMockBot } = require('../../test-utils/mock-bot');
 
-function wire(tabs = { CreditCards: [] }, { now = () => new Date('2026-03-10T00:00:00Z') } = {}) {
+function wire(tabs = { CreditCards: [] }, { now = () => new Date('2026-03-10T00:00:00Z'), purchaseFlow } = {}) {
   const bot = createMockBot();
   const doc = createFakeDoc(tabs);
   const cardSheets = createCardSheets({ getDoc: async () => doc });
-  const commands = createCardCommands({ bot, cardSheets, now });
-  return { bot, doc, cardSheets, commands };
+  const flow = purchaseFlow || { start: jest.fn(async () => {}) };
+  const commands = createCardCommands({ bot, cardSheets, purchaseFlow: flow, now });
+  return { bot, doc, cardSheets, purchaseFlow: flow, commands };
 }
 
 describe('parseCardAdd', () => {
@@ -124,6 +125,22 @@ describe('createCardCommands.handleList', () => {
     expect(text).toContain('2026-03-15'); // due_day=15, today=3/10 → this month
     expect(text).toContain('Metrobank-Titanium');
     expect(text).toContain('2026-03-25'); // due_day=25, today=3/10 → this month
+  });
+
+  test('reflects computed balance from CardTransactions', async () => {
+    const { bot, commands } = wire({
+      CreditCards: [
+        { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' },
+      ],
+      CardTransactions: [
+        { card_name: 'BPI-Gold', type: 'purchase', amount: '1000', tx_date: '2026-03-01' },
+        { card_name: 'BPI-Gold', type: 'purchase', amount: '500', tx_date: '2026-03-05' },
+        { card_name: 'BPI-Gold', type: 'payment', amount: '200', tx_date: '2026-03-08' },
+      ],
+    });
+    await commands.handleList(1);
+    const text = bot.lastSent().text;
+    expect(text).toContain('1,300'); // 1000 + 500 - 200
   });
 
   test('missing CreditCards tab shows setup message', async () => {
@@ -308,6 +325,105 @@ describe('createCardCommands.handleRename', () => {
   });
 });
 
+describe('parseCardTx', () => {
+  test('accepts a well-formed purchase', () => {
+    const r = parseCardTx('BPI-Gold purchase 500 Groceries');
+    expect(r.valid).toBe(true);
+    expect(r.values).toEqual({
+      nickname: 'BPI-Gold',
+      subtype: 'purchase',
+      amount: 500,
+      category: 'Groceries',
+      notes: '',
+    });
+  });
+
+  test('joins trailing tokens into notes', () => {
+    const r = parseCardTx('BPI-Gold purchase 500 Groceries SM North');
+    expect(r.valid).toBe(true);
+    expect(r.values.notes).toBe('SM North');
+  });
+
+  test('resolves category alias via findCategory', () => {
+    const r = parseCardTx('BPI-Gold purchase 300 grab');
+    expect(r.valid).toBe(true);
+    expect(r.values.category).toBe('Transportation');
+  });
+
+  test('rejects unknown subtype', () => {
+    expect(parseCardTx('BPI-Gold refund 500 Groceries').valid).toBe(false);
+  });
+
+  test('rejects missing arguments', () => {
+    expect(parseCardTx('BPI-Gold purchase 500').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold purchase').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold').valid).toBe(false);
+    expect(parseCardTx('').valid).toBe(false);
+  });
+
+  test('rejects invalid amount', () => {
+    expect(parseCardTx('BPI-Gold purchase 0 Groceries').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold purchase abc Groceries').valid).toBe(false);
+    expect(parseCardTx('BPI-Gold purchase -5 Groceries').valid).toBe(false);
+  });
+
+  test('rejects unknown category', () => {
+    expect(parseCardTx('BPI-Gold purchase 500 Nonsense').valid).toBe(false);
+  });
+});
+
+describe('createCardCommands.handleTx (purchase)', () => {
+  test('happy path starts the purchase flow with resolved data', async () => {
+    const { commands, purchaseFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleTx(1, 'BPI-Gold purchase 500 Groceries SM');
+    expect(purchaseFlow.start).toHaveBeenCalledTimes(1);
+    const [chatId, data] = purchaseFlow.start.mock.calls[0];
+    expect(chatId).toBe(1);
+    expect(data).toEqual({
+      card_name: 'BPI-Gold',
+      tx_date: '2026-03-10',
+      amount: 500,
+      category: 'Groceries',
+      notes: 'SM',
+    });
+  });
+
+  test('uses canonical stored card_name even if user typed different case', async () => {
+    const { commands, purchaseFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleTx(1, 'bpi-gold purchase 500 Groceries');
+    expect(purchaseFlow.start.mock.calls[0][1].card_name).toBe('BPI-Gold');
+  });
+
+  test('card not found → error message, flow not started', async () => {
+    const { bot, commands, purchaseFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleTx(1, 'Unknown purchase 500 Groceries');
+    expect(purchaseFlow.start).not.toHaveBeenCalled();
+    expect(bot.lastSent().text).toMatch(/not found/i);
+  });
+
+  test('invalid args → error message, flow not started', async () => {
+    const { bot, commands, purchaseFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    await commands.handleTx(1, 'BPI-Gold purchase 0 Groceries');
+    expect(purchaseFlow.start).not.toHaveBeenCalled();
+    expect(bot.lastSent().text).toMatch(/⚠️/);
+  });
+
+  test('missing CreditCards tab shows setup message', async () => {
+    const { bot, commands, purchaseFlow } = wire({});
+    await commands.handleTx(1, 'BPI-Gold purchase 500 Groceries');
+    expect(purchaseFlow.start).not.toHaveBeenCalled();
+    expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+});
+
 describe('createCardCommands.dispatch', () => {
   test('routes /card add to handleAdd', async () => {
     const { doc, commands } = wire();
@@ -321,6 +437,15 @@ describe('createCardCommands.dispatch', () => {
     const handled = await commands.dispatch(1, '/card list');
     expect(handled).toBe(true);
     expect(bot.lastSent().text).toMatch(/no cards/i);
+  });
+
+  test('routes /card tx to handleTx (purchase)', async () => {
+    const { commands, purchaseFlow } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+    });
+    const handled = await commands.dispatch(1, '/card tx BPI-Gold purchase 500 Groceries');
+    expect(handled).toBe(true);
+    expect(purchaseFlow.start).toHaveBeenCalledTimes(1);
   });
 
   test('routes /card rename to handleRename', async () => {

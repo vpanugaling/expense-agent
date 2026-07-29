@@ -8,6 +8,7 @@ const { createSheetsClient } = require('./sheets-client');
 const { createReceiptFlow } = require('./receipt-flow');
 const { createCardSheets } = require('./card/sheets');
 const { createCardCommands } = require('./card/commands');
+const { createPurchaseFlow } = require('./card/purchase-flow');
 
 // Env
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -64,7 +65,38 @@ if (receiptFlow) flowHandlers.push(receiptFlow);
 // Card command handlers. cardSheets is a thin adapter over sheetsClient.getDoc()
 // so the same lazy singleton + TTL applies to CreditCards writes.
 const cardSheets = isTest ? null : createCardSheets({ getDoc: () => sheetsClient.getDoc() });
-const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets });
+const purchaseFlow = isTest ? null : createPurchaseFlow({
+  bot,
+  onConfirm: async (chatId, data) => {
+    try {
+      await cardSheets.addTransaction({
+        timestamp: new Date().toISOString(),
+        card_name: data.card_name,
+        tx_date: data.tx_date,
+        type: 'purchase',
+        amount: data.amount,
+        category: data.category,
+        notes: data.notes || '',
+        statement_cycle: '',
+      });
+      await bot.sendMessage(
+        chatId,
+        `✅ *Purchase logged*\n` +
+          `${data.card_name} • ₱${Number(data.amount).toLocaleString()} • ${data.category} • ${data.tx_date}`,
+        { parse_mode: 'Markdown' },
+      );
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') {
+        await bot.sendMessage(chatId, '⚠️ CardTransactions tab not found. Please create it with columns: timestamp, card_name, tx_date, type, amount, category, notes, statement_cycle.');
+        return;
+      }
+      console.error('purchase save error:', err.message);
+      await bot.sendMessage(chatId, `❌ Failed to save purchase: ${err.message}`);
+    }
+  },
+});
+if (purchaseFlow) flowHandlers.push(purchaseFlow);
+const cardCommands = isTest ? null : createCardCommands({ bot, cardSheets, purchaseFlow });
 
 // ✅ Gemini call with exponential backoff retry
 async function callGemini(payload) {

@@ -20,4 +20,18 @@ function nextDueDate(dueDay, today = new Date()) {
   return iso(nextYear, nextMonth, dueDay);
 }
 
-module.exports = { nextDueDate };
+// Sum(purchases) − Sum(payments) per card_name. Returns { [card_name]: number }.
+// Negative balances (overpayment) are preserved intentionally — SPEC says so.
+function computeBalances(transactions) {
+  const balances = {};
+  for (const tx of transactions) {
+    const sign = tx.type === 'purchase' ? 1 : tx.type === 'payment' ? -1 : 0;
+    if (sign === 0) continue;
+    const amount = Number(tx.amount);
+    if (!Number.isFinite(amount)) continue;
+    balances[tx.card_name] = (balances[tx.card_name] || 0) + sign * amount;
+  }
+  return balances;
+}
+
+module.exports = { nextDueDate, computeBalances };
