@@ -90,7 +90,7 @@ Reference: [SPEC.md](../SPEC.md) → "Feature Extension: Purchase-Tagged Payment
 
 ## Phase A: Pure Foundation
 
-- [ ] **Task E0** — `bot/card/purchases.js` (4 pure fns) + unit tests
+- [x] **Task E0** — `bot/card/purchases.js` (4 pure fns) + unit tests
   - Acceptance: `synthesizeTxId` (`ps_`-prefixed per CQ2), `listUnpaidPurchases`, `inferCycleFromPurchases`, `hydratePurchases` (CQ4) all pure; case-insensitive card match; multi-cycle/empty/single-cycle branches covered; statement_day boundary covered; `hydratePurchases` skips unknown ids without throwing. **T3 tests:** legacy cycle-only payment leaves purchases as unpaid; purchase-tagged marks paid; mixed history shows only legacy as unpaid; quirk documented in header comment.
   - Verify: `cd bot && npm test card/__tests__/purchases.test.js`; full suite still green.
   - Files: `bot/card/purchases.js`, `bot/card/__tests__/purchases.test.js`.
