@@ -1,5 +1,5 @@
 const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
-const { nextDueDate, computeBalances } = require('./balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate } = require('./balance');
 const { findCategory } = require('../categories');
 
 const LAST4_REGEX = /^\d{4}$/;
@@ -72,6 +72,34 @@ function parseCardTx(argsText) {
   };
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CYCLE_MONTH = /^\d{4}-\d{2}$/;
+
+// /card statement <nickname> <amount> [due_date] [cycle_month]
+// due_date and cycle_month are positional: to override cycle_month the user
+// must also provide due_date. Both are validated by shape here; semantic
+// defaults are filled in by handleStatement using card.statement_day/due_day.
+function parseCardStatement(argsText) {
+  const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 4) {
+    return { valid: false, error: 'Usage: /card statement <nickname> <amount> [due_date YYYY-MM-DD] [cycle_month YYYY-MM]' };
+  }
+  const [nickname, amountRaw, dueRaw, cycleRaw] = parts;
+  const amt = validateAmount(amountRaw);
+  if (!amt.valid) return { valid: false, error: amt.error };
+  let due_date = null;
+  if (dueRaw !== undefined) {
+    if (!ISO_DATE.test(dueRaw)) return { valid: false, error: 'due_date must be YYYY-MM-DD' };
+    due_date = dueRaw;
+  }
+  let cycle_month = null;
+  if (cycleRaw !== undefined) {
+    if (!CYCLE_MONTH.test(cycleRaw)) return { valid: false, error: 'cycle_month must be YYYY-MM' };
+    cycle_month = cycleRaw;
+  }
+  return { valid: true, values: { nickname, statement_amount: amt.value, due_date, cycle_month } };
+}
+
 function parseCardRename(argsText) {
   const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length !== 2) {
@@ -89,8 +117,13 @@ function formatPeso(n) {
 
 const RENAME_TABS = ['CreditCards', 'CardTransactions', 'CardStatements'];
 
-function missingTabMessage() {
-  return '⚠️ CreditCards tab not found. Please create a "CreditCards" tab with columns: card_name, last4, credit_limit, statement_day, due_day, created_at.';
+function missingTabMessage(tab = 'CreditCards') {
+  const columns = {
+    CreditCards: 'card_name, last4, credit_limit, statement_day, due_day, created_at',
+    CardTransactions: 'timestamp, card_name, tx_date, type, amount, category, notes, statement_cycle',
+    CardStatements: 'card_name, cycle_month, statement_amount, due_date, closed_at',
+  }[tab];
+  return `⚠️ ${tab} tab not found. Please create a "${tab}" tab with columns: ${columns}.`;
 }
 
 function toIsoDate(d) {
@@ -169,6 +202,56 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
       );
     }
     return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+  }
+
+  async function handleStatement(chatId, argsText) {
+    const parsed = parseCardStatement(argsText);
+    if (!parsed.valid) return bot.sendMessage(chatId, `⚠️ ${parsed.error}`);
+    const { nickname, statement_amount, due_date: explicitDue, cycle_month: explicitCycle } = parsed.values;
+
+    let card;
+    try {
+      card = await cardSheets.findCard(nickname);
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return bot.sendMessage(chatId, missingTabMessage('CreditCards'));
+      throw err;
+    }
+    if (!card) return bot.sendMessage(chatId, `⚠️ Card "${nickname}" not found.`);
+
+    const today = now();
+    const cycle_month = explicitCycle || deriveCycleMonth(card.statement_day, today);
+    const due_date = explicitDue || computeDueDate(card.due_day, cycle_month);
+
+    // Duplicate check via findStatement (returns null if the tab is missing,
+    // which is fine — addStatement will surface MISSING_TAB below).
+    const existing = await cardSheets.findStatement(card.card_name, cycle_month);
+    if (existing) {
+      return bot.sendMessage(
+        chatId,
+        `⚠️ Statement for ${card.card_name} cycle ${cycle_month} already exists (₱${Number(existing.statement_amount).toLocaleString()}).`,
+      );
+    }
+
+    try {
+      await cardSheets.addStatement({
+        card_name: card.card_name,
+        cycle_month,
+        statement_amount,
+        due_date,
+        closed_at: today.toISOString(),
+      });
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return bot.sendMessage(chatId, missingTabMessage('CardStatements'));
+      throw err;
+    }
+
+    return bot.sendMessage(
+      chatId,
+      `✅ Statement closed for *${card.card_name}*\n` +
+        `Cycle: ${cycle_month} • Amount: ₱${Number(statement_amount).toLocaleString()}\n` +
+        `Due: ${due_date}`,
+      { parse_mode: 'Markdown' },
+    );
   }
 
   async function handleTx(chatId, argsText) {
@@ -288,7 +371,8 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
           '/card add <nickname> <last4> <credit_limit> <statement_day> <due_day>\n' +
           '/card list — show all registered cards\n' +
           '/card rename <old-nickname> <new-nickname>\n' +
-          '/card tx <nickname> purchase <amount> <category> [note]',
+          '/card tx <nickname> purchase <amount> <category> [note]\n' +
+          '/card statement <nickname> <amount> [due_date] [cycle_month]',
         { parse_mode: 'Markdown' },
       );
       return true;
@@ -314,15 +398,19 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, now = () => new Dat
       await handleTx(chatId, subArgs);
       return true;
     }
+    if (sub === 'statement') {
+      await handleStatement(chatId, subArgs);
+      return true;
+    }
 
     await bot.sendMessage(
       chatId,
-      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename, /card tx`,
+      `⚠️ Unknown subcommand "${sub}". Available: /card add, /card list, /card rename, /card tx, /card statement`,
     );
     return true;
   }
 
-  return { handleAdd, handleList, handleRename, handleTx, dispatch };
+  return { handleAdd, handleList, handleRename, handleTx, handleStatement, dispatch };
 }
 
-module.exports = { parseCardAdd, parseCardRename, parseCardTx, createCardCommands };
+module.exports = { parseCardAdd, parseCardRename, parseCardTx, parseCardStatement, createCardCommands };

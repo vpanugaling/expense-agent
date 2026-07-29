@@ -52,10 +52,11 @@ Reference: [SPEC.md](../SPEC.md), [tasks/plan.md](plan.md). All 14 review decisi
 
 ## Phase 3: Statement + Payment
 
-- [ ] **Task 3** — `/card statement` closes a cycle (5A + 6A)
+- [x] **Task 3** — `/card statement` closes a cycle (5A + 6A)
   - Acceptance: `cycle_month` derived from `statement_day` + today; `due_date` defaults to `due_day` in month after `cycle_month`; both overridable; duplicate cycle rejected.
   - Verify: `cd bot && npm test` (`deriveCycleMonth`, `computeDueDate` boundaries); manual mid-cycle + before-statement-day entries.
   - Files: `bot/card/commands.js`, `bot/card/sheets.js`, `bot/card/balance.js`, `bot/card/__tests__/balance.test.js`.
+  - Status: 220/220 tests pass (+36 for Task 3: 10 balance boundary tests, 8 sheets tests for listStatements/findStatement/addStatement, 7 parseCardStatement tests, 10 handleStatement tests, 1 dispatch test). Manual Telegram verification pending.
 
 - [ ] **Task 4** — `/card tx payment` with cycle picker
   - Acceptance: picker lists open cycles; selection sets `statement_cycle`; Confirm writes payment row; overpayment → negative balance; no-cycles branch works; fully-paid cycles drop off picker.

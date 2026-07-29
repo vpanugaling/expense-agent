@@ -185,6 +185,83 @@ describe('createCardSheets.addTransaction', () => {
   });
 });
 
+describe('createCardSheets.listStatements', () => {
+  test('returns coerced statements', async () => {
+    const doc = createFakeDoc({
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '5000', due_date: '2026-03-15', closed_at: 't1' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const stmts = await sheets.listStatements();
+    expect(stmts).toEqual([{
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      statement_amount: 5000,
+      due_date: '2026-03-15',
+      closed_at: 't1',
+    }]);
+  });
+
+  test('returns [] when the CardStatements tab is missing (fresh setup)', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    expect(await sheets.listStatements()).toEqual([]);
+  });
+});
+
+describe('createCardSheets.findStatement', () => {
+  test('returns the row for (card_name, cycle_month) — case-insensitive on card_name', async () => {
+    const doc = createFakeDoc({
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '5000', due_date: '2026-03-15' },
+        { card_name: 'Metrobank', cycle_month: '2026-02', statement_amount: '3000', due_date: '2026-03-25' },
+      ],
+    });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    const row = await sheets.findStatement('bpi-gold', '2026-02');
+    expect(row).toMatchObject({ card_name: 'BPI-Gold', cycle_month: '2026-02' });
+  });
+
+  test('returns null when no matching cycle exists', async () => {
+    const doc = createFakeDoc({ CardStatements: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    expect(await sheets.findStatement('BPI-Gold', '2026-02')).toBeNull();
+  });
+
+  test('returns null when CardStatements is missing', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    expect(await sheets.findStatement('BPI-Gold', '2026-02')).toBeNull();
+  });
+});
+
+describe('createCardSheets.addStatement', () => {
+  test('appends a row with all statement fields', async () => {
+    const doc = createFakeDoc({ CardStatements: [] });
+    const sheets = createCardSheets({ getDoc: async () => doc });
+    await sheets.addStatement({
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      statement_amount: 5000,
+      due_date: '2026-03-15',
+      closed_at: '2026-03-01T00:00:00.000Z',
+    });
+    expect(doc.sheetsByTitle.CardStatements._snapshot()).toEqual([{
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      statement_amount: 5000,
+      due_date: '2026-03-15',
+      closed_at: '2026-03-01T00:00:00.000Z',
+    }]);
+  });
+
+  test('propagates MISSING_TAB when CardStatements is absent', async () => {
+    const sheets = createCardSheets({ getDoc: async () => createFakeDoc({}) });
+    await expect(sheets.addStatement({ card_name: 'X' })).rejects.toMatchObject({
+      code: 'MISSING_TAB',
+    });
+  });
+});
+
 describe('createCardSheets.renameCardInTab', () => {
   test('rewrites matching rows and returns the count of rows changed', async () => {
     const doc = createFakeDoc({

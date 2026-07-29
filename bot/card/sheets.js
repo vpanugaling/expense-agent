@@ -57,6 +57,43 @@ function createCardSheets({ getDoc }) {
     }));
   }
 
+  // Missing tab → [] so /card list and /card due don't break on fresh setups
+  // that have no statements yet.
+  async function listStatements() {
+    let sheet;
+    try {
+      sheet = await getTab('CardStatements');
+    } catch (err) {
+      if (err.code === 'MISSING_TAB') return [];
+      throw err;
+    }
+    const rows = await sheet.getRows();
+    return rows.map((row) => ({
+      card_name: row.get('card_name'),
+      cycle_month: row.get('cycle_month'),
+      statement_amount: Number(row.get('statement_amount')),
+      due_date: row.get('due_date'),
+      closed_at: row.get('closed_at'),
+    }));
+  }
+
+  async function findStatement(cardName, cycleMonth) {
+    const target = String(cardName).toLowerCase();
+    const stmts = await listStatements();
+    return stmts.find((s) => String(s.card_name).toLowerCase() === target && s.cycle_month === cycleMonth) || null;
+  }
+
+  async function addStatement(stmt) {
+    const sheet = await getTab('CardStatements');
+    await sheet.addRow({
+      card_name: stmt.card_name,
+      cycle_month: stmt.cycle_month,
+      statement_amount: stmt.statement_amount,
+      due_date: stmt.due_date,
+      closed_at: stmt.closed_at,
+    });
+  }
+
   async function addTransaction(tx) {
     const sheet = await getTab('CardTransactions');
     await sheet.addRow({
@@ -108,7 +145,18 @@ function createCardSheets({ getDoc }) {
     return { changed };
   }
 
-  return { getTab, listCards, findCard, addCard, listTransactions, addTransaction, renameCardInTab };
+  return {
+    getTab,
+    listCards,
+    findCard,
+    addCard,
+    listTransactions,
+    addTransaction,
+    listStatements,
+    findStatement,
+    addStatement,
+    renameCardInTab,
+  };
 }
 
 module.exports = { createCardSheets };

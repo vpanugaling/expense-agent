@@ -1,4 +1,4 @@
-const { parseCardAdd, parseCardRename, parseCardTx, createCardCommands } = require('../commands');
+const { parseCardAdd, parseCardRename, parseCardTx, parseCardStatement, createCardCommands } = require('../commands');
 const { createCardSheets } = require('../sheets');
 const { createFakeDoc } = require('../../test-utils/fake-sheet');
 const { createMockBot } = require('../../test-utils/mock-bot');
@@ -424,6 +424,150 @@ describe('createCardCommands.handleTx (purchase)', () => {
   });
 });
 
+describe('parseCardStatement', () => {
+  test('accepts nickname + amount (derive due_date and cycle_month later)', () => {
+    const r = parseCardStatement('BPI-Gold 5000');
+    expect(r.valid).toBe(true);
+    expect(r.values).toEqual({ nickname: 'BPI-Gold', statement_amount: 5000, due_date: null, cycle_month: null });
+  });
+
+  test('accepts explicit due_date', () => {
+    const r = parseCardStatement('BPI-Gold 5000 2026-03-15');
+    expect(r.valid).toBe(true);
+    expect(r.values).toMatchObject({ statement_amount: 5000, due_date: '2026-03-15', cycle_month: null });
+  });
+
+  test('accepts explicit due_date and cycle_month', () => {
+    const r = parseCardStatement('BPI-Gold 5000 2026-03-15 2026-02');
+    expect(r.valid).toBe(true);
+    expect(r.values).toMatchObject({ due_date: '2026-03-15', cycle_month: '2026-02' });
+  });
+
+  test('rejects missing arguments', () => {
+    expect(parseCardStatement('BPI-Gold').valid).toBe(false);
+    expect(parseCardStatement('').valid).toBe(false);
+  });
+
+  test('rejects invalid amount', () => {
+    expect(parseCardStatement('BPI-Gold 0').valid).toBe(false);
+    expect(parseCardStatement('BPI-Gold -100').valid).toBe(false);
+    expect(parseCardStatement('BPI-Gold abc').valid).toBe(false);
+  });
+
+  test('rejects malformed due_date', () => {
+    expect(parseCardStatement('BPI-Gold 5000 2026-3-15').valid).toBe(false);
+    expect(parseCardStatement('BPI-Gold 5000 March-15').valid).toBe(false);
+  });
+
+  test('rejects malformed cycle_month', () => {
+    expect(parseCardStatement('BPI-Gold 5000 2026-03-15 2026-2').valid).toBe(false);
+    expect(parseCardStatement('BPI-Gold 5000 2026-03-15 202602').valid).toBe(false);
+  });
+
+  test('rejects extra arguments', () => {
+    expect(parseCardStatement('BPI-Gold 5000 2026-03-15 2026-02 extra').valid).toBe(false);
+  });
+});
+
+describe('createCardCommands.handleStatement', () => {
+  const cards = [
+    { card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' },
+  ];
+
+  test('happy path derives cycle_month + due_date and writes the row', async () => {
+    // today = 2026-03-10, statement_day=25 → 10 < 25 → cycle_month = 2026-02
+    // due_day=15, cycle_month=2026-02 → due_date = 2026-03-15
+    const { bot, doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'BPI-Gold 5000');
+    const rows = doc.sheetsByTitle.CardStatements._snapshot();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      card_name: 'BPI-Gold',
+      cycle_month: '2026-02',
+      statement_amount: 5000,
+      due_date: '2026-03-15',
+    });
+    expect(rows[0].closed_at).toBe('2026-03-10T00:00:00.000Z');
+    expect(bot.lastSent().text).toMatch(/statement/i);
+    expect(bot.lastSent().text).toContain('2026-02');
+    expect(bot.lastSent().text).toContain('2026-03-15');
+  });
+
+  test('derives cycle_month = current month when today.day >= statement_day', async () => {
+    // today = 2026-03-25 (== statement_day 25) → cycle_month = 2026-03
+    // due_day=15, cycle=2026-03 → 2026-04-15
+    const { doc, commands } = wire(
+      { CreditCards: cards, CardStatements: [] },
+      { now: () => new Date('2026-03-25T00:00:00Z') },
+    );
+    await commands.handleStatement(1, 'BPI-Gold 5000');
+    const row = doc.sheetsByTitle.CardStatements._snapshot()[0];
+    expect(row.cycle_month).toBe('2026-03');
+    expect(row.due_date).toBe('2026-04-15');
+  });
+
+  test('uses explicit due_date when provided', async () => {
+    const { doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'BPI-Gold 5000 2026-03-20');
+    const row = doc.sheetsByTitle.CardStatements._snapshot()[0];
+    expect(row.due_date).toBe('2026-03-20');
+    expect(row.cycle_month).toBe('2026-02'); // still derived
+  });
+
+  test('uses explicit cycle_month when provided', async () => {
+    const { doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'BPI-Gold 5000 2026-03-20 2026-01');
+    const row = doc.sheetsByTitle.CardStatements._snapshot()[0];
+    expect(row.cycle_month).toBe('2026-01');
+    expect(row.due_date).toBe('2026-03-20');
+  });
+
+  test('uses canonical stored card_name even if user typed different case', async () => {
+    const { doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'bpi-gold 5000');
+    expect(doc.sheetsByTitle.CardStatements._snapshot()[0].card_name).toBe('BPI-Gold');
+  });
+
+  test('rejects duplicate (card_name, cycle_month)', async () => {
+    const { bot, doc, commands } = wire({
+      CreditCards: cards,
+      CardStatements: [
+        { card_name: 'BPI-Gold', cycle_month: '2026-02', statement_amount: '4500', due_date: '2026-03-15', closed_at: 'earlier' },
+      ],
+    });
+    await commands.handleStatement(1, 'BPI-Gold 5000');
+    expect(doc.sheetsByTitle.CardStatements._snapshot()).toHaveLength(1); // no new row
+    expect(bot.lastSent().text).toMatch(/already exists|duplicate/i);
+    expect(bot.lastSent().text).toContain('2026-02');
+  });
+
+  test('card not found → error, no write', async () => {
+    const { bot, doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'Unknown 5000');
+    expect(doc.sheetsByTitle.CardStatements._snapshot()).toHaveLength(0);
+    expect(bot.lastSent().text).toMatch(/not found/i);
+  });
+
+  test('missing CreditCards tab shows setup message', async () => {
+    const { bot, commands } = wire({});
+    await commands.handleStatement(1, 'BPI-Gold 5000');
+    expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+
+  test('missing CardStatements tab shows setup message', async () => {
+    const { bot, commands } = wire({ CreditCards: cards });
+    await commands.handleStatement(1, 'BPI-Gold 5000');
+    expect(bot.lastSent().text).toMatch(/CardStatements.*(not found|create)/i);
+  });
+
+  test('invalid args produce a user-visible error without writing', async () => {
+    const { bot, doc, commands } = wire({ CreditCards: cards, CardStatements: [] });
+    await commands.handleStatement(1, 'BPI-Gold 0');
+    expect(doc.sheetsByTitle.CardStatements._snapshot()).toHaveLength(0);
+    expect(bot.lastSent().text).toMatch(/⚠️/);
+  });
+});
+
 describe('createCardCommands.dispatch', () => {
   test('routes /card add to handleAdd', async () => {
     const { doc, commands } = wire();
@@ -446,6 +590,16 @@ describe('createCardCommands.dispatch', () => {
     const handled = await commands.dispatch(1, '/card tx BPI-Gold purchase 500 Groceries');
     expect(handled).toBe(true);
     expect(purchaseFlow.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('routes /card statement to handleStatement', async () => {
+    const { doc, commands } = wire({
+      CreditCards: [{ card_name: 'BPI-Gold', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' }],
+      CardStatements: [],
+    });
+    const handled = await commands.dispatch(1, '/card statement BPI-Gold 5000');
+    expect(handled).toBe(true);
+    expect(doc.sheetsByTitle.CardStatements._snapshot()).toHaveLength(1);
   });
 
   test('routes /card rename to handleRename', async () => {

@@ -20,6 +20,33 @@ function nextDueDate(dueDay, today = new Date()) {
   return iso(nextYear, nextMonth, dueDay);
 }
 
+function formatYearMonth(year, monthZeroIdx) {
+  return `${year}-${String(monthZeroIdx + 1).padStart(2, '0')}`;
+}
+
+// SPEC: if today.day >= statement_day, the current month is the cycle that
+// just closed. Otherwise the last-closed cycle is the previous month.
+function deriveCycleMonth(statementDay, today = new Date()) {
+  const year = today.getUTCFullYear();
+  const month = today.getUTCMonth();
+  const day = today.getUTCDate();
+  if (day >= statementDay) return formatYearMonth(year, month);
+  const prevMonth = month === 0 ? 11 : month - 1;
+  const prevYear = month === 0 ? year - 1 : year;
+  return formatYearMonth(prevYear, prevMonth);
+}
+
+// SPEC: default due_date is due_day in the month AFTER cycle_month, with the
+// same end-of-month clamp used by nextDueDate.
+function computeDueDate(dueDay, cycleMonth) {
+  const [yearStr, monthStr] = String(cycleMonth).split('-');
+  const year = Number(yearStr);
+  const monthZeroIdx = Number(monthStr) - 1;
+  const nextMonth = (monthZeroIdx + 1) % 12;
+  const nextYear = monthZeroIdx === 11 ? year + 1 : year;
+  return iso(nextYear, nextMonth, dueDay);
+}
+
 // Sum(purchases) − Sum(payments) per card_name. Returns { [card_name]: number }.
 // Negative balances (overpayment) are preserved intentionally — SPEC says so.
 function computeBalances(transactions) {
@@ -34,4 +61,4 @@ function computeBalances(transactions) {
   return balances;
 }
 
-module.exports = { nextDueDate, computeBalances };
+module.exports = { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate };

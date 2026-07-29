@@ -1,4 +1,4 @@
-const { nextDueDate, computeBalances } = require('../balance');
+const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate } = require('../balance');
 
 // All dates are treated as UTC calendar dates (no time component).
 // See balance.js — using getUTC*/Date.UTC avoids TZ drift under jest.
@@ -85,5 +85,55 @@ describe('computeBalances', () => {
       { card_name: 'BPI-Gold', type: 'weird', amount: 999 },
     ]);
     expect(balances).toEqual({ 'BPI-Gold': 100 });
+  });
+});
+
+describe('deriveCycleMonth', () => {
+  test('returns current month when today.day >= statement_day', () => {
+    expect(deriveCycleMonth(25, utc(2026, 3, 25))).toBe('2026-03');
+    expect(deriveCycleMonth(25, utc(2026, 3, 30))).toBe('2026-03');
+  });
+
+  test('returns previous month when today.day < statement_day', () => {
+    expect(deriveCycleMonth(25, utc(2026, 3, 20))).toBe('2026-02');
+    expect(deriveCycleMonth(25, utc(2026, 3, 1))).toBe('2026-02');
+  });
+
+  test('rolls year over from January to previous December', () => {
+    expect(deriveCycleMonth(25, utc(2026, 1, 10))).toBe('2025-12');
+  });
+
+  test('handles statement_day=1 (today.day always >= 1 → current month)', () => {
+    expect(deriveCycleMonth(1, utc(2026, 3, 1))).toBe('2026-03');
+    expect(deriveCycleMonth(1, utc(2026, 3, 15))).toBe('2026-03');
+  });
+
+  test('handles statement_day=31 correctly in short months', () => {
+    // Feb only has 28 days; today.day (28) < 31 → cycle rolls to previous month
+    expect(deriveCycleMonth(31, utc(2026, 2, 28))).toBe('2026-01');
+    // March 31 → cycle_month = March
+    expect(deriveCycleMonth(31, utc(2026, 3, 31))).toBe('2026-03');
+  });
+});
+
+describe('computeDueDate', () => {
+  test('returns due_day in the month AFTER cycle_month', () => {
+    expect(computeDueDate(15, '2026-03')).toBe('2026-04-15');
+  });
+
+  test('rolls year over from December cycle to January due', () => {
+    expect(computeDueDate(15, '2026-12')).toBe('2027-01-15');
+  });
+
+  test('clamps due_day=31 in February (non-leap)', () => {
+    expect(computeDueDate(31, '2027-01')).toBe('2027-02-28');
+  });
+
+  test('clamps due_day=31 in February (leap)', () => {
+    expect(computeDueDate(31, '2028-01')).toBe('2028-02-29');
+  });
+
+  test('clamps due_day=31 in a 30-day month', () => {
+    expect(computeDueDate(31, '2026-03')).toBe('2026-04-30');
   });
 });
