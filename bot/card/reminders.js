@@ -1,4 +1,5 @@
 const { nextDueDate, computeOpenCycles } = require('./balance');
+const { escapeMd } = require('../markdown');
 
 const MS_PER_DAY = 86400000;
 
@@ -53,11 +54,12 @@ function computeCardReminders(cards, statements, transactions, today = new Date(
 
 function formatReminder(r) {
   const label = r.when === 'T-0' ? 'due today' : 'due in 3 days';
+  const name = escapeMd(r.card_name);
   if (r.type === 'card') {
-    return `🔔 *${r.card_name}* is ${label} (${r.due_date}).`;
+    return `🔔 *${name}* is ${label} (${r.due_date}).`;
   }
   const outstanding = Number(r.outstanding).toLocaleString();
-  return `🔔 *${r.card_name}* statement (cycle ${r.cycle_month}) is ${label} — ₱${outstanding} outstanding (${r.due_date}).`;
+  return `🔔 *${name}* statement (cycle ${r.cycle_month}) is ${label} — ₱${outstanding} outstanding (${r.due_date}).`;
 }
 
 function createReminders({

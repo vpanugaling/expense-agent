@@ -66,6 +66,12 @@ function computeBalances(transactions) {
 // returned oldest-first so the picker prompts the user to clear the most
 // overdue cycle first. Payments with empty statement_cycle are unlinked and
 // ignored here — they are not applied to any cycle.
+//
+// Overpayment on an older cycle carries credit forward to later open cycles,
+// consistent with computeBalances (which preserves negative balances) and with
+// how real credit cards apply excess payment. Without this, a user who
+// overpays cycle A would still see cycle B's full outstanding in the picker
+// even though their card balance already reflects the credit.
 function computeOpenCycles(cardName, statements, transactions) {
   const target = String(cardName).toLowerCase();
   const paidMap = {};
@@ -77,21 +83,39 @@ function computeOpenCycles(cardName, statements, transactions) {
     if (!Number.isFinite(amount)) continue;
     paidMap[tx.statement_cycle] = (paidMap[tx.statement_cycle] || 0) + amount;
   }
-  const open = [];
-  for (const s of statements) {
-    if (String(s.card_name).toLowerCase() !== target) continue;
-    const statementAmount = Number(s.statement_amount);
-    const paid = paidMap[s.cycle_month] || 0;
-    if (paid >= statementAmount) continue;
-    open.push({
+
+  // Sort cycles oldest-first so carryforward flows in the right direction.
+  const cycles = statements
+    .filter((s) => String(s.card_name).toLowerCase() === target)
+    .map((s) => ({
       cycle_month: s.cycle_month,
       due_date: s.due_date,
-      statement_amount: statementAmount,
-      paid,
-      outstanding: statementAmount - paid,
+      statement_amount: Number(s.statement_amount),
+      paid: paidMap[s.cycle_month] || 0,
+    }))
+    .sort((a, b) => String(a.cycle_month).localeCompare(String(b.cycle_month)));
+
+  let credit = 0;
+  const open = [];
+  for (const c of cycles) {
+    const rawOutstanding = c.statement_amount - c.paid;
+    // Overpaid cycle contributes its excess to the pool and is skipped.
+    if (rawOutstanding <= 0) {
+      credit += -rawOutstanding;
+      continue;
+    }
+    const applied = Math.min(credit, rawOutstanding);
+    credit -= applied;
+    const outstanding = rawOutstanding - applied;
+    if (outstanding === 0) continue;
+    open.push({
+      cycle_month: c.cycle_month,
+      due_date: c.due_date,
+      statement_amount: c.statement_amount,
+      paid: c.paid,
+      outstanding,
     });
   }
-  open.sort((a, b) => String(a.cycle_month).localeCompare(String(b.cycle_month)));
   return open;
 }
 

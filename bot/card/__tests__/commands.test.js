@@ -102,6 +102,13 @@ describe('createCardCommands.handleAdd', () => {
     await commands.handleAdd(1, 'BPI-Gold 1234 80000 25 15');
     expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
   });
+
+  test('escapes underscores in card_name so Markdown parses correctly', async () => {
+    const { bot, commands } = wire();
+    await commands.handleAdd(1, 'my_card 1234 80000 25 15');
+    const text = bot.lastSent().text;
+    expect(text).toContain('my\\_card');
+  });
 });
 
 describe('createCardCommands.handleList', () => {
@@ -148,6 +155,17 @@ describe('createCardCommands.handleList', () => {
     const { bot, commands } = wire({});
     await commands.handleList(1);
     expect(bot.lastSent().text).toMatch(/CreditCards.*(not found|create)/i);
+  });
+
+  test('escapes underscores in card_name when rendering the list', async () => {
+    const { bot, commands } = wire({
+      CreditCards: [
+        { card_name: 'my_card', last4: '1234', credit_limit: '80000', statement_day: '25', due_day: '15' },
+      ],
+    });
+    await commands.handleList(1);
+    const text = bot.lastSent().text;
+    expect(text).toContain('my\\_card');
   });
 });
 

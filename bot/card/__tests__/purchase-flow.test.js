@@ -124,4 +124,21 @@ describe('createPurchaseFlow', () => {
     const handled = await flow.handleCallback(1, 'receipt_confirm');
     expect(handled).toBe(false);
   });
+
+  test('escapes Markdown special chars in card_name and notes on preview', async () => {
+    // card_name is validated to [A-Za-z0-9_-] so underscores are the realistic
+    // injection vector; notes are fully free-form user input.
+    const { flow, bot } = make();
+    await flow.start(1, {
+      card_name: 'my_card',
+      tx_date: '2026-03-15',
+      amount: 100,
+      category: 'Groceries',
+      notes: 'weird*[note]_',
+    });
+    const text = bot.lastSent().text;
+    expect(text).toContain('my\\_card');
+    expect(text).not.toMatch(/(^|[^\\])_card/);
+    expect(text).toContain('weird\\*\\[note]\\_');
+  });
 });

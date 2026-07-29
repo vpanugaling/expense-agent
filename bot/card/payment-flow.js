@@ -1,4 +1,5 @@
 const { createConfirmFlow } = require('../confirm-flow');
+const { escapeMd } = require('../markdown');
 const { validateAmount } = require('./validators');
 
 const PREFIX = 'card_payment_';
@@ -45,7 +46,7 @@ function buildRender(bot) {
     const amount = Number(data.amount || 0);
     const summary =
       `💳 *Payment preview*\n\n` +
-      `• *Card:* ${data.card_name}\n` +
+      `• *Card:* ${escapeMd(data.card_name)}\n` +
       `• *Cycle:* ${data.statement_cycle}\n` +
       `• *Amount:* ₱${amount.toLocaleString()}\n` +
       `• *Date:* ${data.tx_date}\n`;
@@ -107,7 +108,7 @@ function createPaymentFlow({ bot, onConfirm, now = () => new Date() }) {
     buttons.push([{ text: '❌ Cancel', callback_data: `${PREFIX}cancel` }]);
     await bot.sendMessage(
       chatId,
-      `💳 Which cycle is this payment for?\n\n*${card_name}* — ₱${Number(amount).toLocaleString()}`,
+      `💳 Which cycle is this payment for?\n\n*${escapeMd(card_name)}* — ₱${Number(amount).toLocaleString()}`,
       {
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: buttons },

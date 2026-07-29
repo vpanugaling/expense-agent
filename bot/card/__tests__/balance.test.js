@@ -191,6 +191,38 @@ describe('computeOpenCycles', () => {
     expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([]);
   });
 
+  test('carries overpayment credit forward to the next open cycle', () => {
+    // Cycle 2026-03 overpaid by $500. That excess should reduce the next open
+    // cycle (2026-04) instead of vanishing — otherwise the picker shows the
+    // user a larger balance than they actually owe.
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-04', statement_amount: 800, due_date: '2026-05-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 1500, statement_cycle: '2026-03' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+      { cycle_month: '2026-04', due_date: '2026-05-15', statement_amount: 800, paid: 0, outstanding: 300 },
+    ]);
+  });
+
+  test('carries overpayment credit across multiple later cycles', () => {
+    // $400 paid on 2026-03 (statement $100). Excess $300 covers 2026-04 ($200)
+    // entirely and leaves $100 to partially clear 2026-05 ($300 → $200 open).
+    const statements = [
+      { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 100, due_date: '2026-04-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-04', statement_amount: 200, due_date: '2026-05-15' },
+      { card_name: 'BPI-Gold', cycle_month: '2026-05', statement_amount: 300, due_date: '2026-06-15' },
+    ];
+    const transactions = [
+      { card_name: 'BPI-Gold', type: 'payment', amount: 400, statement_cycle: '2026-03' },
+    ];
+    expect(computeOpenCycles('BPI-Gold', statements, transactions)).toEqual([
+      { cycle_month: '2026-05', due_date: '2026-06-15', statement_amount: 300, paid: 0, outstanding: 200 },
+    ]);
+  });
+
   test('sums multiple payments against the same cycle', () => {
     const statements = [
       { card_name: 'BPI-Gold', cycle_month: '2026-03', statement_amount: 1000, due_date: '2026-04-15' },

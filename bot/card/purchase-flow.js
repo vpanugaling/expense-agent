@@ -1,5 +1,6 @@
 const { CATEGORIES, findCategory } = require('../categories');
 const { createConfirmFlow } = require('../confirm-flow');
+const { escapeMd } = require('../markdown');
 const { validateAmount } = require('./validators');
 
 function toIsoDate(d) {
@@ -58,11 +59,11 @@ function buildRender(bot) {
     const amount = Number(data.amount || 0);
     const summary =
       `💳 *Purchase preview*\n\n` +
-      `• *Card:* ${data.card_name}\n` +
+      `• *Card:* ${escapeMd(data.card_name)}\n` +
       `• *Amount:* ₱${amount.toLocaleString()}\n` +
-      `• *Category:* ${data.category || 'Other'}\n` +
+      `• *Category:* ${escapeMd(data.category || 'Other')}\n` +
       `• *Date:* ${data.tx_date}\n` +
-      (data.notes ? `• *Note:* ${data.notes}\n` : '');
+      (data.notes ? `• *Note:* ${escapeMd(data.notes)}\n` : '');
 
     await bot.sendMessage(chatId, summary, {
       parse_mode: 'Markdown',

@@ -1,6 +1,7 @@
 const { validateNickname, validateLimit, validateDay, validateAmount } = require('./validators');
 const { nextDueDate, computeBalances, deriveCycleMonth, computeDueDate, computeOpenCycles, computeCardDue } = require('./balance');
 const { findCategory } = require('../categories');
+const { escapeMd } = require('../markdown');
 
 const LAST4_REGEX = /^\d{4}$/;
 
@@ -179,7 +180,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
 
       return bot.sendMessage(
         chatId,
-        `✅ Registered *${card_name}* (••${last4})\n` +
+        `✅ Registered *${escapeMd(card_name)}* (••${last4})\n` +
           `Limit: ₱${formatPeso(credit_limit)}\n` +
           `Statement: day ${statement_day} • Due: day ${due_day}`,
         { parse_mode: 'Markdown' },
@@ -217,7 +218,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
     for (const c of cards) {
       const balance = balances[c.card_name] || 0;
       lines.push(
-        `*${c.card_name}* (••${c.last4})\n` +
+        `*${escapeMd(c.card_name)}* (••${c.last4})\n` +
           `  Limit: ₱${formatPeso(c.credit_limit)} • Balance: ₱${formatPeso(balance)}\n` +
           `  Next due: ${nextDueDate(c.due_day, today)}`,
       );
@@ -252,7 +253,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
         r.source === 'statement'
           ? `₱${formatPeso(r.outstanding)} due (cycle ${r.cycle_month})`
           : '_projected — no open statement_';
-      lines.push(`*${r.card_name}* — ${r.due_date}\n  ${tail}`);
+      lines.push(`*${escapeMd(r.card_name)}* — ${r.due_date}\n  ${tail}`);
     }
     return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
   }
@@ -300,7 +301,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
 
     return bot.sendMessage(
       chatId,
-      `✅ Statement closed for *${card.card_name}*\n` +
+      `✅ Statement closed for *${escapeMd(card.card_name)}*\n` +
         `Cycle: ${cycle_month} • Amount: ₱${Number(statement_amount).toLocaleString()}\n` +
         `Due: ${due_date}`,
       { parse_mode: 'Markdown' },
@@ -426,7 +427,7 @@ function createCardCommands({ bot, cardSheets, purchaseFlow, paymentFlow, now = 
 
     return bot.sendMessage(
       chatId,
-      `✅ Renamed *${canonicalOld}* → *${newName}* (updated: ${written.join(', ')})`,
+      `✅ Renamed *${escapeMd(canonicalOld)}* → *${escapeMd(newName)}* (updated: ${written.join(', ')})`,
       { parse_mode: 'Markdown' },
     );
   }
